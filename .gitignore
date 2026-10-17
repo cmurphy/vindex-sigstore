@@ -1,0 +1,11 @@
+# Built binaries and WASM artifacts
+bin/
+dist/
+vindexd
+vindexd_debug
+*.wasm
+
+# Go test and coverage artifacts
+*.test
+*.out
+*.prof

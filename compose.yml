@@ -1,0 +1,72 @@
+#
+# Copyright 2026 The Sigstore Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+services:
+  vindex_init:
+    build:
+      context: .
+      dockerfile: Dockerfile.init
+    privileged: true
+    environment:
+      - DATA_MOUNT_DIR=/mnt/disks/data
+      - MPT_MOUNT_DIR=/mnt/disks/mpt
+      - VINDEX_UID=65532
+      - VINDEX_GID=65532
+      # Set SWAP_SIZE (e.g. "32G") to allocate and enable a swapfile on the MPT disk
+      - SWAP_SIZE=${SWAP_SIZE:-}
+    volumes:
+      - vindex_data:/mnt/disks/data:rw
+      - vindex_mpt:/mnt/disks/mpt:rw
+
+  vindexd:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: local-deploy
+    command:
+      - "--mode=publisher"
+      - "--wasm_path=/etc/vindex/mapper.wasm"
+      - "--input_log_url=${INPUT_LOG_URL:-https://log2025-1.rekor.sigstore.dev}"
+      - "--input_log_origin=${INPUT_LOG_ORIGIN:-log2025-1.rekor.sigstore.dev}"
+      - "--input_log_pubkey=${INPUT_LOG_PUBKEY:-log2025-1.rekor.sigstore.dev+cf119915+AbfK5adZJxsI323FwGD2AJJ9F4i89cfDuLdGJBIYntuO}"
+      - "--output_log_dir=/mnt/disks/data/outlog"
+      - "--output_log_origin=${OUTPUT_LOG_ORIGIN:-vindex.rekor.sigstore.dev}"
+      - "--output_log_signer_key=${OUTPUT_LOG_SIGNER_KEY}"
+      - "--db_path=/mnt/disks/data/pebble"
+      - "--tile_cache_dir=/mnt/disks/data/tiles"
+      - "--mpt_dir=/mnt/disks/mpt/tree"
+      - "--listen_addr=:8080"
+      - "--metrics_addr=:9090"
+      - "--enable_ui=true"
+    ports:
+      - "8080:8080" # HTTP read & UI port
+      - "9090:9090" # Prometheus metrics port
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl -fsS http://localhost:8080/healthz || exit 1
+      timeout: 30s
+      retries: 10
+      interval: 5s
+    volumes:
+      - vindex_data:/mnt/disks/data:rw
+      - vindex_mpt:/mnt/disks/mpt:rw
+    depends_on:
+      vindex_init:
+        condition: service_completed_successfully
+
+volumes:
+  vindex_data: {}
+  vindex_mpt: {}
