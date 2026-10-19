@@ -86,12 +86,16 @@ func NormalizeIssuer(issuer string) string {
 }
 
 // FormatKeyWithIssuer formats an identity or OID key coupled with a normalized OIDC issuer.
+// It always includes the ':' delimiter (even if issuer is empty) so that issuer-unscoped
+// lookups can query "<baseKey>:" with ?prefix=true without matching sibling prefixes.
 func FormatKeyWithIssuer(baseKey, issuer string) string {
-	normIssuer := NormalizeIssuer(issuer)
-	if normIssuer == "" {
-		return baseKey
-	}
-	return baseKey + ":" + normIssuer
+	return baseKey + ":" + NormalizeIssuer(issuer)
+}
+
+// FormatSubjectPrefix returns the trailing-colon prefix ("<baseKey>:") used to query
+// all issuers for an exact subject or OID key via GET /vindex/v1/keys/{prefix}?prefix=true.
+func FormatSubjectPrefix(baseKey string) string {
+	return baseKey + ":"
 }
 
 // FormatOIDKey formats an ASN.1 OID dot-string and its extension value.
@@ -145,15 +149,37 @@ func isAllowlistedOID(id asn1.ObjectIdentifier) bool {
 	return false
 }
 
+// IsValidPreimageKey reports whether key satisfies VIndex's canonical key invariants:
+// 1 <= len(key) <= 1024 and strictly printable non-whitespace ASCII (0x21..0x7E).
+func IsValidPreimageKey(key string) bool {
+	if len(key) == 0 || len(key) > 1024 {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		b := key[i]
+		if b < 0x21 || b > 0x7E {
+			return false
+		}
+	}
+	return true
+}
+
 // MapLeaf inspects a Rekor v2 JSON leaf and emits canonical search key preimages.
-func MapLeaf(leaf []byte, emit func(key []byte)) {
+func MapLeaf(leaf []byte, rawEmit func(key []byte)) {
+	emit := func(key string) {
+		if IsValidPreimageKey(key) {
+			rawEmit([]byte(key))
+		}
+	}
+
 	var entry HashedRekordEntry
 	if err := json.Unmarshal(leaf, &entry); err != nil {
 		return
 	}
 	verifier := entry.Spec.HashedRekordV002.Signature.Verifier
 
-	// 1. Fulcio X.509 Certificate: Emit both unscoped and "<value>:<issuer>" keys
+	// 1. Fulcio X.509 Certificate: Emit "<value>:<issuer>" keys.
+	// Unscoped (any-issuer) or partial-URI lookups are served via MPT prefix queries (?prefix=true).
 	if verifier.X509Certificate != nil && verifier.X509Certificate.RawBytes != "" {
 		certDer, err := base64.StdEncoding.DecodeString(verifier.X509Certificate.RawBytes)
 		if err == nil {
@@ -164,10 +190,7 @@ func MapLeaf(leaf []byte, emit func(key []byte)) {
 				for _, email := range cert.EmailAddresses {
 					san := NormalizeEmail(email)
 					if san != "" {
-						emit([]byte(san))
-						if issuer != "" {
-							emit([]byte(FormatKeyWithIssuer(san, issuer)))
-						}
+						emit(FormatKeyWithIssuer(san, issuer))
 					}
 				}
 
@@ -175,10 +198,7 @@ func MapLeaf(leaf []byte, emit func(key []byte)) {
 				for _, u := range cert.URIs {
 					san := NormalizeURI(u.String())
 					if san != "" {
-						emit([]byte(san))
-						if issuer != "" {
-							emit([]byte(FormatKeyWithIssuer(san, issuer)))
-						}
+						emit(FormatKeyWithIssuer(san, issuer))
 					}
 				}
 
@@ -189,10 +209,7 @@ func MapLeaf(leaf []byte, emit func(key []byte)) {
 							val = strings.TrimSpace(val)
 							if val != "" {
 								oidKey := FormatOIDKey(ext.Id.String(), val)
-								emit([]byte(oidKey))
-								if issuer != "" {
-									emit([]byte(FormatKeyWithIssuer(oidKey, issuer)))
-								}
+								emit(FormatKeyWithIssuer(oidKey, issuer))
 							}
 						}
 					}
@@ -201,12 +218,11 @@ func MapLeaf(leaf []byte, emit func(key []byte)) {
 		}
 	}
 
-	// 2. Public Key Verifier: Emit both raw SPKI DER bytes and hex SHA-256 fingerprint
+	// 2. Public Key Verifier: Emit hex SHA-256 fingerprint of SPKI DER bytes
 	if verifier.PublicKey != nil && verifier.PublicKey.RawBytes != "" {
-		keyDer, err := base64.StdEncoding.DecodeString(verifier.PublicKey.RawBytes)
+		keyDer, err := base64.StdEncoding.DecodeString(strings.TrimSpace(verifier.PublicKey.RawBytes))
 		if err == nil && len(keyDer) > 0 {
-			emit(keyDer)
-			emit([]byte(PublicKeyFingerprint(keyDer)))
+			emit(PublicKeyFingerprint(keyDer))
 		}
 	}
 }

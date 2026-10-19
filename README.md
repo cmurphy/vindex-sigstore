@@ -31,6 +31,19 @@ For the unprivileged `vindexd` container to actually page out its memory-mapped 
 
 ---
 
+## Canonical Key Format & Query Modes
+
+`mapper.wasm` ([`pkg/mapper`](pkg/mapper/mapper.go)) emits printable ASCII canonical keys (`0x21..0x7E`) into the VIndex Merkle Patricia Trie (MPT):
+
+| Subject Type | Emitted Canonical Key | Exact Point Lookup (`/vindex/v1/keys/{key}`) | Prefix Lookup (`/vindex/v1/keys/{prefix}?prefix=true`) |
+| :--- | :--- | :--- | :--- |
+| **Email SAN** | `<email>:<issuer>` | `alice@example.com:https://accounts.google.com` | Any issuer: `alice@example.com:` |
+| **URI SAN** | `<uri>:<issuer>` | `https://github.com/org/repo/.github/workflows/release.yml@refs/tags/v1.0.0:https://token.actions.githubusercontent.com` | Any issuer: `<full_uri>:`<br>All refs for workflow: `https://github.com/org/repo/.github/workflows/release.yml@`<br>All workflows in repo: `https://github.com/org/repo/` |
+| **Fulcio OID** | `<oid>:<value>:<issuer>` | `1.3.6.1.4.1.57264.1.12:https://github.com/org/repo:https://token.actions.githubusercontent.com` | Any issuer: `1.3.6.1.4.1.57264.1.12:https://github.com/org/repo:`<br>All repos in org: `1.3.6.1.4.1.57264.1.12:https://github.com/org/` |
+| **Public Key** | `<64-char hex sha256(spki_der)>` | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` | Short hex prefix: `e3b0c44298fc` |
+
+---
+
 ## Building Locally
 
 Use the `Makefile` to build the WebAssembly `MapFn`, `vindexd` binary, or container images:

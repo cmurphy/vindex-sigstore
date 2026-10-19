@@ -26,6 +26,7 @@ import (
 	"math/big"
 	"net/url"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -82,16 +83,35 @@ func TestMapLeafCertificate(t *testing.T) {
 	})
 
 	want := []string{
-		"alice@example.com",
 		"alice@example.com:https://token.actions.githubusercontent.com",
-		"https://github.com/sigstore/rekor-tiles/.github/workflows/release.yml@refs/tags/v1.0.0",
 		"https://github.com/sigstore/rekor-tiles/.github/workflows/release.yml@refs/tags/v1.0.0:https://token.actions.githubusercontent.com",
-		"1.3.6.1.4.1.57264.1.12:https://github.com/sigstore/rekor-tiles",
 		"1.3.6.1.4.1.57264.1.12:https://github.com/sigstore/rekor-tiles:https://token.actions.githubusercontent.com",
 	}
 
 	if !slices.Equal(got, want) {
 		t.Errorf("MapLeaf() = %v, want %v", got, want)
+	}
+
+	// Verify prefix queries (?prefix=true) match the emitted keys as expected:
+	// 1. Issuer-unscoped email lookup via FormatSubjectPrefix
+	emailPrefix := FormatSubjectPrefix(NormalizeEmail("Alice@Example.com"))
+	if !strings.HasPrefix(got[0], emailPrefix) {
+		t.Errorf("key %q does not match subject prefix %q", got[0], emailPrefix)
+	}
+	// 2. Workflow path without git ref (all tags/branches)
+	workflowPrefix := "https://github.com/sigstore/rekor-tiles/.github/workflows/release.yml@"
+	if !strings.HasPrefix(got[1], workflowPrefix) {
+		t.Errorf("key %q does not match workflow prefix %q", got[1], workflowPrefix)
+	}
+	// 3. Repo prefix on URI SAN
+	repoURIPrefix := "https://github.com/sigstore/rekor-tiles/"
+	if !strings.HasPrefix(got[1], repoURIPrefix) {
+		t.Errorf("key %q does not match repo URI prefix %q", got[1], repoURIPrefix)
+	}
+	// 4. Issuer-unscoped OID lookup via FormatSubjectPrefix
+	oidPrefix := FormatSubjectPrefix(FormatOIDKey("1.3.6.1.4.1.57264.1.12", "https://github.com/sigstore/rekor-tiles"))
+	if !strings.HasPrefix(got[2], oidPrefix) {
+		t.Errorf("key %q does not match OID prefix %q", got[2], oidPrefix)
 	}
 }
 
@@ -113,14 +133,29 @@ func TestMapLeafPublicKey(t *testing.T) {
 		got = append(got, slices.Clone(key))
 	})
 
-	if len(got) != 2 {
-		t.Fatalf("expected 2 emitted keys, got %d", len(got))
-	}
-	if !slices.Equal(got[0], spkiDER) {
-		t.Errorf("first emitted key did not match raw SPKI DER")
+	if len(got) != 1 {
+		t.Fatalf("expected 1 emitted key, got %d", len(got))
 	}
 	wantFP := PublicKeyFingerprint(spkiDER)
-	if string(got[1]) != wantFP {
-		t.Errorf("second emitted key = %q, want %q", string(got[1]), wantFP)
+	if string(got[0]) != wantFP {
+		t.Errorf("emitted key = %q, want %q", string(got[0]), wantFP)
+	}
+	if !IsValidPreimageKey(string(got[0])) {
+		t.Errorf("emitted key %q is not a valid printable ASCII preimage key", string(got[0]))
+	}
+}
+
+func TestIsValidPreimageKey(t *testing.T) {
+	if !IsValidPreimageKey("alice@example.com:https://accounts.google.com") {
+		t.Error("expected valid printable ASCII key to pass")
+	}
+	if IsValidPreimageKey("") {
+		t.Error("expected empty key to fail")
+	}
+	if IsValidPreimageKey("has space") {
+		t.Error("expected key with space (0x20) to fail")
+	}
+	if IsValidPreimageKey(string([]byte{0x30, 0x59, 0x30, 0x13})) {
+		t.Error("expected raw ASN.1 DER bytes containing 0x13 to fail")
 	}
 }
