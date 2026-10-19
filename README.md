@@ -42,6 +42,11 @@ make all
 # Build only the WebAssembly MapFn (wasip1/wasm)
 make wasm
 
+# Generate an Ed25519 Note signing and verification keypair for the Output Log
+make keygen
+# Or specify a custom origin:
+make keygen ORIGIN=my.vindex.org
+
 # Build both Docker images (vindexd and vindex-init)
 make docker-build
 ```

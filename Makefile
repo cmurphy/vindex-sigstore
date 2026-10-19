@@ -13,9 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-.PHONY: all wasm vindexd docker-build docker-build-vindexd docker-build-init test clean ldflags help
+.PHONY: all wasm vindexd keygen docker-build docker-build-vindexd docker-build-init test clean ldflags help
 
 all: wasm vindexd
+
+ORIGIN ?= vindex.rekor.sigstore.dev
 
 GIT_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 GIT_HASH ?= $(shell git rev-parse HEAD 2>/dev/null || echo "unknown")
@@ -49,6 +51,9 @@ wasm: ## Compile the Rekor v2 identity MapFn to WebAssembly (wasip1/wasm)
 vindexd: ## Build the vindexd server binary from upstream module
 	@mkdir -p bin
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(SERVER_LDFLAGS)" -o bin/vindexd github.com/transparency-dev/incubator/vindex/v1/cmd/vindexd
+
+keygen: ## Generate an Ed25519 Note signing and verification keypair (override origin with ORIGIN=...)
+	@go run github.com/transparency-dev/incubator/scripts/keygen "$(ORIGIN)"
 
 docker-build: docker-build-vindexd docker-build-init ## Build both vindexd and vindex-init container images
 
