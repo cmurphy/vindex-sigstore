@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<!--
+  Copyright 2026 The Sigstore Authors.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rekor Identity Monitor · Sigstore</title>
+  <meta name="description" content="Look up signing identities, provenance claims, and public keys in a Sigstore Rekor verifiable index (VIndex).">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+  <link rel="stylesheet" href="index.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="brand" href="/" id="brand-home" aria-label="Sigstore Rekor Identity Monitor home">
+        <svg class="brand__mark" viewBox="0 0 32 32" aria-hidden="true">
+          <path d="M16 1.5l2.6 2.1 3.3-.5 1.3 3.1 3.1 1.3-.5 3.3 2.1 2.6-2.1 2.6.5 3.3-3.1 1.3-1.3 3.1-3.3-.5L16 30.5l-2.6-2.1-3.3.5-1.3-3.1-3.1-1.3.5-3.3L4.1 16l2.1-2.6-.5-3.3 3.1-1.3 1.3-3.1 3.3.5z" fill="#ED6A5B"/>
+          <circle cx="16" cy="16" r="7.2" fill="none" stroke="#F9F7EF" stroke-width="1.6"/>
+          <path d="M12.6 16.2l2.3 2.3 4.6-4.8" fill="none" stroke="#F9F7EF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="brand__name">sigstore</span>
+        <span class="brand__divider" aria-hidden="true"></span>
+        <span class="brand__product">Rekor Identity Monitor</span>
+      </a>
+      <nav class="site-nav" aria-label="Primary">
+        <a href="https://docs.sigstore.dev" target="_blank" rel="noopener">Docs</a>
+        <a href="https://github.com/sigstore/rekor-monitor" target="_blank" rel="noopener">rekor-monitor</a>
+        <a href="https://github.com/sigstore/vindex-sigstore" target="_blank" rel="noopener">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="page">
+    <div class="page__hero">
+      <div>
+        <h1>Look up signing identities</h1>
+        <p class="page__lede">Find every Rekor entry for a signing identity, CI provenance claim, or public key in this verifiable index.</p>
+      </div>
+      <div class="shard-pill" title="Active Rekor shard configured for this instance">
+        <span class="shard-pill__dot" aria-hidden="true"></span>
+        <span id="shard-badge-text">Loading shard…</span>
+      </div>
+    </div>
+
+    <!-- Search -->
+    <section class="card" aria-labelledby="search-heading">
+      <h2 id="search-heading" class="visually-hidden">Search</h2>
+      <div class="tabs" role="tablist" aria-label="Query type">
+        <button class="tab" role="tab" id="tab-cert" aria-controls="panel-cert" aria-selected="true" type="button">OIDC identity</button>
+        <button class="tab" role="tab" id="tab-ext" aria-controls="panel-ext" aria-selected="false" tabindex="-1" type="button">Provenance claim</button>
+        <button class="tab" role="tab" id="tab-key" aria-controls="panel-key" aria-selected="false" tabindex="-1" type="button">Public key</button>
+        <button class="tab" role="tab" id="tab-raw" aria-controls="panel-raw" aria-selected="false" tabindex="-1" type="button">Raw key</button>
+      </div>
+
+      <form id="search-form" novalidate>
+        <!-- OIDC / Certificate identity -->
+        <div class="form-grid" role="tabpanel" id="panel-cert" aria-labelledby="tab-cert">
+          <div class="field" id="cert-subject-field">
+            <label for="cert-subject" id="cert-subject-label">Identity (email or workflow URI)</label>
+            <input class="input mono-input" id="cert-subject" type="text" spellcheck="false"
+                   placeholder="e.g. alice@example.com or https://github.com/org/repo/.github/workflows/release.yml@refs/tags/v1.0.0">
+          </div>
+
+          <div class="field">
+            <label for="cert-issuer">OIDC issuer <span class="label-muted">(blank = any issuer)</span></label>
+            <input class="input mono-input" id="cert-issuer" type="text" spellcheck="false"
+                   placeholder="Leave blank for any issuer, or enter exact issuer URL">
+            <div class="presets" aria-label="Issuer presets">
+              <button type="button" class="preset-chip" data-target="cert-issuer" data-value="">Any issuer</button>
+              <button type="button" class="preset-chip" data-target="cert-issuer" data-value="https://accounts.google.com">Google</button>
+              <button type="button" class="preset-chip" data-target="cert-issuer" data-value="https://token.actions.githubusercontent.com">GitHub Actions</button>
+              <button type="button" class="preset-chip" data-target="cert-issuer" data-value="https://github.com/login/oauth">GitHub OAuth</button>
+              <button type="button" class="preset-chip" data-target="cert-issuer" data-value="https://gitlab.com">GitLab</button>
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <label class="toggle" for="cert-prefix" id="cert-prefix-wrap">
+              <input type="checkbox" id="cert-prefix">
+              <span class="toggle__track" aria-hidden="true"></span>
+              <span>Prefix match</span>
+            </label>
+            <button class="btn btn--primary" type="submit" id="cert-search">Search</button>
+          </div>
+          <p class="hint" id="cert-hint"></p>
+        </div>
+
+        <!-- Fulcio extension / OIDC claim -->
+        <div class="form-grid" role="tabpanel" id="panel-ext" aria-labelledby="tab-ext" hidden>
+          <div class="field">
+            <label for="ext-oid" id="ext-oid-label">Claim / extension</label>
+            <select class="select" id="ext-oid">
+              <option value="source-repository-uri" selected>source-repository-uri (1.3.6.1.4.1.57264.1.12)</option>
+              <option value="build-signer-uri">build-signer-uri (1.3.6.1.4.1.57264.1.9)</option>
+              <option value="source-repository-identifier">source-repository-identifier (1.3.6.1.4.1.57264.1.15)</option>
+              <option value="source-repository-owner-uri">source-repository-owner-uri (1.3.6.1.4.1.57264.1.16)</option>
+              <option value="source-repository-owner-identifier">source-repository-owner-identifier (1.3.6.1.4.1.57264.1.17)</option>
+              <option value="build-config-uri">build-config-uri (1.3.6.1.4.1.57264.1.18)</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="ext-value">Claim value</label>
+            <input class="input mono-input" id="ext-value" type="text" spellcheck="false"
+                   placeholder="e.g. https://github.com/sigstore/cosign">
+          </div>
+
+          <div class="form-actions">
+            <label class="toggle" for="ext-prefix" id="ext-prefix-wrap">
+              <input type="checkbox" id="ext-prefix">
+              <span class="toggle__track" aria-hidden="true"></span>
+              <span>Prefix match</span>
+            </label>
+            <button class="btn btn--primary" type="submit" id="ext-search">Search</button>
+          </div>
+
+          <div class="field field--wide">
+            <label for="ext-issuer">OIDC issuer <span class="label-muted">(blank = any issuer)</span></label>
+            <input class="input mono-input" id="ext-issuer" type="text" spellcheck="false"
+                   placeholder="Leave blank for any issuer, or enter exact issuer URL">
+            <div class="presets" aria-label="Issuer presets">
+              <button type="button" class="preset-chip" data-target="ext-issuer" data-value="">Any issuer</button>
+              <button type="button" class="preset-chip" data-target="ext-issuer" data-value="https://token.actions.githubusercontent.com">GitHub Actions</button>
+              <button type="button" class="preset-chip" data-target="ext-issuer" data-value="https://gitlab.com">GitLab</button>
+            </div>
+          </div>
+          <p class="hint" id="ext-hint"></p>
+        </div>
+
+        <!-- Public key -->
+        <div class="form-grid" role="tabpanel" id="panel-key" aria-labelledby="tab-key" hidden>
+          <div class="field field--wide">
+            <div class="field__row">
+              <label for="key-input" id="key-input-label">Public key (PEM / Base64 SPKI DER) or 64-character hex digest</label>
+              <label class="file-link">
+                <span>Load .pem / .pub file</span>
+                <input type="file" id="key-file" accept=".pem,.pub,.crt,.key,text/plain" hidden>
+              </label>
+            </div>
+            <textarea class="textarea" id="key-input" spellcheck="false"
+                      placeholder="-----BEGIN PUBLIC KEY-----&#10;MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...&#10;-----END PUBLIC KEY-----"></textarea>
+          </div>
+          <div class="form-actions">
+            <button class="btn btn--primary" type="submit" id="key-search">Search</button>
+          </div>
+          <p class="hint" id="key-hint"></p>
+        </div>
+
+        <!-- Raw canonical key -->
+        <div class="form-grid" role="tabpanel" id="panel-raw" aria-labelledby="tab-raw" hidden>
+          <div class="field field--wide">
+            <label for="raw-input">Canonical VIndex key or prefix</label>
+            <input class="input mono-input" id="raw-input" type="text" spellcheck="false"
+                   placeholder="Enter exact printable ASCII key or prefix">
+          </div>
+          <div class="form-actions">
+            <label class="toggle" for="raw-prefix">
+              <input type="checkbox" id="raw-prefix">
+              <span class="toggle__track" aria-hidden="true"></span>
+              <span>Prefix match</span>
+            </label>
+            <button class="btn btn--primary" type="submit" id="raw-search">Search</button>
+          </div>
+          <p class="hint">Queries <code>GET /keys?key=…</code> or <code>GET /keys?prefix=…</code> directly without transformation.</p>
+        </div>
+      </form>
+
+      <!-- Live Canonical Key Preview -->
+      <div class="key-preview">
+        <div class="key-preview__item">
+          <span class="key-preview__label">Canonical key <span class="mode-tag" id="preview-mode">IDLE</span></span>
+          <code class="key-preview__value" id="preview-key">Enter a query above…</code>
+        </div>
+      </div>
+    </section>
+
+    <!-- Status / Verification Banner -->
+    <section class="verify verify--idle" id="verify-banner" aria-labelledby="verify-heading" aria-live="polite" hidden>
+      <div class="verify__header">
+        <h2 class="verify__title" id="verify-heading">Ready</h2>
+        <div class="verify__right">
+          <span class="verify__caption" id="verify-caption"></span>
+          <button class="btn btn--outline-sm" type="button" id="view-raw-proof" hidden>View raw proof</button>
+        </div>
+      </div>
+      <ul class="verify__list" id="verify-list"></ul>
+    </section>
+
+    <!-- Results -->
+    <div class="results-grid" id="results-section" hidden>
+      <section class="card" aria-labelledby="keys-heading">
+        <div class="card__header">
+          <h2 class="card__title" id="keys-heading">Matched keys</h2>
+          <span class="card__meta" id="keys-meta"></span>
+        </div>
+        <div id="keys-empty" class="empty-state" hidden>No matching keys in the verifiable index.</div>
+        <table class="table table--keys" id="keys-table" aria-describedby="keys-heading">
+          <thead>
+            <tr><th scope="col">Key</th></tr>
+          </thead>
+          <tbody id="keys-body"></tbody>
+        </table>
+      </section>
+
+      <section class="card" aria-labelledby="entries-heading">
+        <div class="card__header">
+          <h2 class="card__title" id="entries-heading">Rekor log entries</h2>
+          <span class="card__meta" id="entries-meta">Newest first</span>
+        </div>
+        <div id="entries-empty" class="empty-state" hidden>Select a matched key to view log entries.</div>
+        <table class="table table--entries" id="entries-table">
+          <colgroup>
+            <col style="width: 120px">
+            <col>
+            <col style="width: 126px">
+          </colgroup>
+          <thead>
+            <tr>
+              <th scope="col">Log index</th>
+              <th scope="col">Tile location / summary</th>
+              <th scope="col"><span class="visually-hidden">Inspect</span></th>
+            </tr>
+          </thead>
+          <tbody id="entries-body"></tbody>
+        </table>
+        <div class="pager" id="pager">
+          <span class="pager__status" id="pager-status"></span>
+          <span class="pager__buttons">
+            <button class="pager__btn" type="button" id="pager-newer" disabled>← Newer</button>
+            <button class="pager__btn" type="button" id="pager-older" disabled>Older →</button>
+          </span>
+        </div>
+      </section>
+    </div>
+
+    <!-- rekor-monitor snippet -->
+    <section class="card" aria-labelledby="snippet-heading">
+      <div class="card__header">
+        <h2 class="card__title" id="snippet-heading">Monitor this query with rekor-monitor</h2>
+        <span class="card__meta">Run with <code>--mode=vindex</code></span>
+      </div>
+      <div class="code-card__body">
+        <button class="btn btn--ghost code-card__copy" type="button" id="copy-snippet">
+          <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="9" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+          <span id="copy-label">Copy</span>
+        </button>
+        <pre><code id="snippet"></code></pre>
+      </div>
+    </section>
+  </main>
+
+  <!-- Leaf / Proof Inspector Modal -->
+  <div class="modal-backdrop" id="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal__header">
+        <div class="modal__title-group">
+          <h3 class="modal__title" id="modal-title">Rekor Entry</h3>
+          <span class="modal__badge" id="modal-badge"></span>
+        </div>
+        <button class="modal__close" type="button" id="modal-close" aria-label="Close modal">✕</button>
+      </div>
+      <div class="modal__body">
+        <pre id="modal-content"></pre>
+      </div>
+    </div>
+  </div>
+
+  <footer class="site-footer">
+    Powered by <a href="https://github.com/sigstore/vindex-sigstore" target="_blank" rel="noopener">vindex-sigstore</a>.
+    For automated continuous verification use <a href="https://github.com/sigstore/rekor-monitor" target="_blank" rel="noopener">rekor-monitor</a>.
+  </footer>
+</body>
+</html>

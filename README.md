@@ -61,6 +61,31 @@ Allowlisted `identity v0.0.1` claim names: `build-signer-uri`, `source-repositor
 
 ---
 
+## Web UI (`webui/`)
+
+[`webui/`](webui/) contains the static Sigstore-branded Rekor Identity Monitor single-page application (`index.html`, `index.css`, `app.js`, and `config.json`), designed to be served directly from a static bucket (such as Google Cloud Storage + Cloud CDN) or an unprivileged Nginx container.
+
+On page load, `app.js` fetches a relative [`config.json`](webui/config.json) file so the same static HTML/CSS/JS assets can be deployed in front of either a `hashedrekord v0.0.2` or an `identity v0.0.1` shard without modifying the bundle:
+
+```json
+{
+  "shardType": "hashedrekord",
+  "shardFormat": "hashedrekord v0.0.2",
+  "shardLabel": "log2025-1.rekor.sigstore.dev · hashedrekord v0.0.2",
+  "vindexBaseURL": "",
+  "inputLogURL": "https://log2025-1.rekor.sigstore.dev/api/v2"
+}
+```
+
+* **`shardType`:** `"hashedrekord"` (default) or `"identity"` (enables double-SHA-256 OIDC key construction, algorithm-prefixed SPKI public key hashing, and binary `0x01` leaf decoding).
+* **`shardFormat` / `shardLabel`:** Display strings shown in the UI's shard badge and proof inspector.
+* **`vindexBaseURL`:** Base URL of the `vindexd` read API (empty `""` when served from the same origin/load balancer path as `/keys` and `/values`, or a full origin such as `"https://vindex.rekor.sigstore.dev"` when hosted on a separate static domain).
+* **`inputLogURL`:** Base `tlog-tiles` URL of the upstream Rekor shard used when inspecting raw log leaves (`/tile/entries/...`).
+
+In Kubernetes/Nginx deployments, mount a `ConfigMap` over `/usr/share/nginx/html/config.json` (or render it at container startup via Nginx's `/etc/nginx/templates/` `envsubst`). In GCS deployments, upload a shard-specific `config.json` alongside `index.html` in each bucket or path prefix.
+
+---
+
 ## Building Locally
 
 ```bash

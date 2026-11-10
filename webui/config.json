@@ -1,0 +1,7 @@
+{
+  "shardType": "hashedrekord",
+  "shardFormat": "hashedrekord v0.0.2",
+  "shardLabel": "log2025-1.rekor.sigstore.dev · hashedrekord v0.0.2",
+  "vindexBaseURL": "",
+  "inputLogURL": "https://log2025-1.rekor.sigstore.dev/api/v2"
+}
