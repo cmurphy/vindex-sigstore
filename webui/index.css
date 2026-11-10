@@ -931,6 +931,12 @@ code,
   gap: 10px;
 }
 
+.modal__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .modal__title {
   margin: 0;
   font-size: 16px;

@@ -84,6 +84,8 @@ On page load, `app.js` fetches a relative [`config.json`](webui/config.json) fil
 
 In Kubernetes/Nginx deployments, mount a `ConfigMap` over `/usr/share/nginx/html/config.json` (or render it at container startup via Nginx's `/etc/nginx/templates/` `envsubst`). In GCS deployments, upload a shard-specific `config.json` alongside `index.html` in each bucket or path prefix.
 
+Queries and inspected log entries automatically sync to URL `#...` hash fragments (for example `#tab=cert&subject=alice@example.com&entry=235`), providing shareable stateless deep links without transmitting cleartext query parameters to static-host or CDN access logs.
+
 ---
 
 ## Building Locally

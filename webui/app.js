@@ -69,6 +69,8 @@ const state = {
   snippet: "",
   tileCache: {},
   entrySummaryCache: {},
+  activeEntryIdx: null,
+  lastComputedKey: "",
 };
 
 // ---------- Crypto & formatting helpers ----------
@@ -440,6 +442,7 @@ function showBanner(kind, title, captionHTML, items, showProofBtn = false) {
   $("verify-heading").textContent = title;
   $("verify-caption").innerHTML = captionHTML || "";
   $("view-raw-proof").hidden = !showProofBtn;
+  $("copy-deep-link").hidden = !showProofBtn;
   $("verify-list").innerHTML = (items || [])
     .map((t) => `<li class="verify__item">${CHECK_SVG}<span>${escapeHTML(t)}</span></li>`)
     .join("");
@@ -542,7 +545,8 @@ async function fetchValuesForSelectedKey(appendEarlier = false) {
   renderEntries();
 }
 
-async function executeSearch() {
+async function executeSearch(opts = {}) {
+  const { updateHash = true, preferredKey = null } = opts;
   let q;
   try {
     q = await buildQuery();
@@ -554,6 +558,9 @@ async function executeSearch() {
     showBanner("empty", "Enter a query", "Provide an identity, claim value, or public key to search.", []);
     return;
   }
+
+  state.lastComputedKey = q.key;
+  if (updateHash) syncDeepLinkHash();
 
   showBanner("loading", "Querying VIndex…", `Looking up <code>${escapeHTML(q.key)}</code>`, []);
   state.rawKeysText = "";
@@ -576,6 +583,10 @@ async function executeSearch() {
     state.inputLogSize = parsedKeys.inputLogSize;
     state.outputLogSize = parsedKeys.outputLogSize;
     state.selectedKeyIdx = 0;
+    if (preferredKey) {
+      const idx = state.discoveredKeys.findIndex((dk) => dk.key === preferredKey);
+      if (idx >= 0) state.selectedKeyIdx = idx;
+    }
     state.indices = [];
     state.nextBefore = null;
     state.page = 0;
@@ -694,13 +705,37 @@ async function fetchTileBundle(formattedTile, partialCount) {
   return entries;
 }
 
-async function inspectLeaf(idx) {
+async function ensureInputLogSize() {
+  if (state.inputLogSize > 0) return;
+  try {
+    const resp = await fetch(vindexURL("keys?key=_"));
+    if (resp.ok) {
+      const parsed = parseKeysResponse(await resp.text());
+      if (parsed.inputLogSize > 0) {
+        state.inputLogSize = parsed.inputLogSize;
+        state.outputLogSize = parsed.outputLogSize;
+        state.mptRoot = parsed.mptRoot;
+      }
+    }
+  } catch (err) {
+    console.warn("Unable to pre-fetch inputLogSize:", err);
+  }
+}
+
+async function inspectLeaf(idx, updateHash = true) {
+  state.activeEntryIdx = idx;
+  if (updateHash) syncDeepLinkHash();
+
+  openModal("Rekor Log Entry", `#${fmtInt(idx)}`, "Fetching entry bundle…", true);
+
+  if (state.inputLogSize === 0) {
+    await ensureInputLogSize();
+  }
+
   const tileIdx = Math.floor(idx / TILE_SIZE);
   const formattedTile = formatTileIndex(tileIdx);
   const isFullTile = (tileIdx + 1) * TILE_SIZE <= state.inputLogSize;
   const partialCount = !isFullTile && state.inputLogSize > 0 ? state.inputLogSize % TILE_SIZE : 0;
-
-  openModal("Rekor Log Entry", `#${fmtInt(idx)}`, "Fetching entry bundle…");
 
   try {
     const entries = await fetchTileBundle(formattedTile, partialCount);
@@ -716,23 +751,144 @@ async function inspectLeaf(idx) {
       summaryEl.textContent = decoded.summary;
       summaryEl.title = decoded.summary;
     }
-    openModal("Rekor Log Entry", `#${fmtInt(idx)}`, decoded.pretty);
+    openModal("Rekor Log Entry", `#${fmtInt(idx)}`, decoded.pretty, true);
   } catch (e) {
-    openModal("Rekor Log Entry", `#${fmtInt(idx)}`, `Failed to fetch leaf: ${e.message}`);
+    openModal("Rekor Log Entry", `#${fmtInt(idx)}`, `Failed to fetch leaf: ${e.message}`, true);
   }
+}
+
+// ---------- Stateless Deep Links (#... hash fragment) ----------
+
+function buildDeepLinkParams() {
+  const params = new URLSearchParams();
+  if (state.tab === "cert") {
+    const subject = $("cert-subject").value;
+    const issuer = $("cert-issuer").value;
+    const prefix = !isIdentityShard() && $("cert-prefix").checked;
+    if (subject) {
+      params.set("tab", "cert");
+      params.set("subject", subject);
+      if (issuer && !prefix) params.set("issuer", issuer);
+      if (prefix) params.set("prefix", "1");
+    }
+  } else if (state.tab === "ext") {
+    const claim = $("ext-oid").value;
+    const value = $("ext-value").value;
+    const issuer = $("ext-issuer").value;
+    const prefix = !isIdentityShard() && $("ext-prefix").checked;
+    if (value) {
+      params.set("tab", "ext");
+      params.set("claim", claim);
+      params.set("value", value);
+      if (issuer && !prefix) params.set("issuer", issuer);
+      if (prefix) params.set("prefix", "1");
+    }
+  } else if (state.tab === "key") {
+    if (state.lastComputedKey) {
+      params.set("tab", "key");
+      params.set("key", state.lastComputedKey);
+    }
+  } else if (state.tab === "raw") {
+    const raw = $("raw-input").value;
+    if (raw) {
+      params.set("tab", "raw");
+      params.set("key", raw);
+      if ($("raw-prefix").checked) params.set("prefix", "1");
+    }
+  }
+
+  if (state.discoveredKeys.length > 1 && state.selectedKeyIdx > 0) {
+    const sel = state.discoveredKeys[state.selectedKeyIdx];
+    if (sel) params.set("selected", sel.key);
+  }
+  if (state.activeEntryIdx !== null) {
+    params.set("entry", String(state.activeEntryIdx));
+  }
+  return params;
+}
+
+function syncDeepLinkHash() {
+  const str = buildDeepLinkParams().toString();
+  const nextURL = str ? `${location.pathname}${location.search}#${str}` : `${location.pathname}${location.search}`;
+  history.replaceState(null, "", nextURL);
+}
+
+async function restoreFromDeepLink() {
+  const rawHash = location.hash.replace(/^#/, "");
+  if (!rawHash) return;
+  const params = new URLSearchParams(rawHash);
+
+  const tab = params.get("tab");
+  const selectedKey = params.get("selected");
+  const entryParam = params.get("entry");
+  let hasSearchQuery = false;
+
+  if (tab && ["cert", "ext", "key", "raw"].includes(tab)) {
+    selectTab(tab);
+    if (tab === "cert" && params.get("subject")) {
+      $("cert-subject").value = params.get("subject");
+      $("cert-issuer").value = params.get("issuer") || "";
+      $("cert-prefix").checked = !isIdentityShard() && params.get("prefix") === "1";
+      hasSearchQuery = true;
+    } else if (tab === "ext" && params.get("value")) {
+      const claim = params.get("claim");
+      if (claim && OIDS[claim]) $("ext-oid").value = claim;
+      $("ext-value").value = params.get("value");
+      $("ext-issuer").value = params.get("issuer") || "";
+      $("ext-prefix").checked = !isIdentityShard() && params.get("prefix") === "1";
+      hasSearchQuery = true;
+    } else if (tab === "key" && params.get("key")) {
+      $("key-input").value = params.get("key");
+      hasSearchQuery = true;
+    } else if (tab === "raw" && params.get("key")) {
+      $("raw-input").value = params.get("key");
+      $("raw-prefix").checked = params.get("prefix") === "1";
+      hasSearchQuery = true;
+    }
+  }
+
+  await updatePreview();
+
+  if (hasSearchQuery) {
+    await executeSearch({ updateHash: false, preferredKey: selectedKey });
+  }
+  if (entryParam !== null && /^\d+$/.test(entryParam)) {
+    await inspectLeaf(Number(entryParam), false);
+  } else if (!$("modal-backdrop").hidden) {
+    $("modal-backdrop").hidden = true;
+    state.activeEntryIdx = null;
+  }
+}
+
+async function copyCurrentDeepLink(btnEl, defaultLabel) {
+  syncDeepLinkHash();
+  try {
+    await navigator.clipboard.writeText(location.href);
+    btnEl.textContent = "Copied!";
+  } catch {
+    btnEl.textContent = "Copy failed";
+  }
+  setTimeout(() => {
+    btnEl.textContent = defaultLabel;
+  }, 1600);
 }
 
 // ---------- Modal & Events ----------
 
-function openModal(title, badge, content) {
+function openModal(title, badge, content, isEntry = false) {
   $("modal-title").textContent = title;
   $("modal-badge").textContent = badge;
   $("modal-content").textContent = content;
+  $("copy-modal-link").hidden = !isEntry;
   $("modal-backdrop").hidden = false;
 }
 
 function closeModal() {
   $("modal-backdrop").hidden = true;
+  if (state.activeEntryIdx !== null) {
+    state.activeEntryIdx = null;
+    syncDeepLinkHash();
+  }
 }
 
 function selectTab(name) {
@@ -782,6 +938,7 @@ async function init() {
   }
   applyShardConfig();
   await updatePreview();
+  await restoreFromDeepLink();
 }
 
 document.querySelectorAll(".tab").forEach((btn) => {
@@ -834,6 +991,7 @@ $("keys-body").addEventListener("click", async (e) => {
   const row = e.target.closest("tr[data-index]");
   if (!row) return;
   state.selectedKeyIdx = Number(row.dataset.index);
+  syncDeepLinkHash();
   renderKeys();
   try {
     await fetchValuesForSelectedKey(false);
@@ -877,6 +1035,18 @@ $("pager-older").addEventListener("click", async () => {
       showBanner("error", "Pagination failed", escapeHTML(err.message), []);
     }
   }
+});
+
+$("copy-deep-link").addEventListener("click", () => {
+  copyCurrentDeepLink($("copy-deep-link"), "Copy link");
+});
+
+$("copy-modal-link").addEventListener("click", () => {
+  copyCurrentDeepLink($("copy-modal-link"), "Copy entry link");
+});
+
+window.addEventListener("hashchange", () => {
+  restoreFromDeepLink();
 });
 
 $("view-raw-proof").addEventListener("click", () => {

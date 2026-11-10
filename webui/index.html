@@ -197,6 +197,7 @@
         <h2 class="verify__title" id="verify-heading">Ready</h2>
         <div class="verify__right">
           <span class="verify__caption" id="verify-caption"></span>
+          <button class="btn btn--outline-sm" type="button" id="copy-deep-link" hidden>Copy link</button>
           <button class="btn btn--outline-sm" type="button" id="view-raw-proof" hidden>View raw proof</button>
         </div>
       </div>
@@ -274,7 +275,10 @@
           <h3 class="modal__title" id="modal-title">Rekor Entry</h3>
           <span class="modal__badge" id="modal-badge"></span>
         </div>
-        <button class="modal__close" type="button" id="modal-close" aria-label="Close modal">✕</button>
+        <div class="modal__actions">
+          <button class="btn btn--outline-sm" type="button" id="copy-modal-link" hidden>Copy entry link</button>
+          <button class="modal__close" type="button" id="modal-close" aria-label="Close modal">✕</button>
+        </div>
       </div>
       <div class="modal__body">
         <pre id="modal-content"></pre>
