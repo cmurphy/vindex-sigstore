@@ -30,6 +30,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+
+	"github.com/sigstore/vindex-sigstore/pkg/mapper/claim"
 )
 
 const (
@@ -45,14 +47,6 @@ const (
 	ClaimIdentity = "identity"
 	ClaimIssuer   = "issuer"
 
-	// Allowlisted CI provenance claim names (matching hashedrekord v0.0.2 Fulcio extensions).
-	ClaimBuildSignerURI                  = "build-signer-uri"
-	ClaimSourceRepositoryURI             = "source-repository-uri"
-	ClaimSourceRepositoryIdentifier      = "source-repository-identifier"
-	ClaimSourceRepositoryOwnerURI        = "source-repository-owner-uri"
-	ClaimSourceRepositoryOwnerIdentifier = "source-repository-owner-identifier"
-	ClaimBuildConfigURI                  = "build-config-uri"
-
 	// Public key algorithm identifiers prefixed to SPKI DER in root_of_trust.
 	AlgMLDSA44 = "ML-DSA-44"
 	AlgMLDSA65 = "ML-DSA-65"
@@ -61,16 +55,6 @@ const (
 )
 
 var (
-	// AllowlistedClaims lists the 6 CI provenance claim names indexed by MapLeaf.
-	AllowlistedClaims = []string{
-		ClaimBuildSignerURI,
-		ClaimSourceRepositoryURI,
-		ClaimSourceRepositoryIdentifier,
-		ClaimSourceRepositoryOwnerURI,
-		ClaimSourceRepositoryOwnerIdentifier,
-		ClaimBuildConfigURI,
-	}
-
 	// Precomputed H(H(name)) digests for O(1) binary leaf inspection without runtime hashing.
 	keyHashIdentity [hashSize]byte
 	keyHashIssuer   [hashSize]byte
@@ -86,9 +70,9 @@ var (
 func init() {
 	keyHashIdentity = DoubleSHA256([]byte(ClaimIdentity))
 	keyHashIssuer = DoubleSHA256([]byte(ClaimIssuer))
-	allowlistedKH = make(map[[hashSize]byte]struct{}, len(AllowlistedClaims))
-	for _, name := range AllowlistedClaims {
-		allowlistedKH[DoubleSHA256([]byte(name))] = struct{}{}
+	allowlistedKH = make(map[[hashSize]byte]struct{}, len(claim.Allowlisted))
+	for _, c := range claim.Allowlisted {
+		allowlistedKH[DoubleSHA256([]byte(c.Name))] = struct{}{}
 	}
 }
 

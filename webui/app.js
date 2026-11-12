@@ -212,7 +212,6 @@ async function buildQuery() {
 
   if (state.tab === "ext") {
     const claimName = $("ext-oid").value;
-    const oid = OIDS[claimName];
     const value = $("ext-value").value;
     const issuer = $("ext-issuer").value;
     const prefix = !idShard && $("ext-prefix").checked;
@@ -234,13 +233,13 @@ async function buildQuery() {
       }
     } else {
       if (prefix) {
-        key = `${oid}:${value}`;
+        key = `${claimName}:${value}`;
         isPrefix = true;
       } else if (!issuer) {
-        key = `${oid}:${value}:`;
+        key = `${claimName}:${value}:`;
         isPrefix = true;
       } else {
-        key = `${oid}:${value}:${issuer}`;
+        key = `${claimName}:${value}:${issuer}`;
         isPrefix = false;
       }
       validatePrintableKey(key);
@@ -921,7 +920,7 @@ function applyShardConfig() {
     $("cert-hint").textContent =
       "Values are matched with exact case (no normalization). Leave OIDC issuer blank to match across all issuers, or enable Prefix match to scan a URI prefix.";
     $("ext-hint").textContent =
-      "Fulcio extensions are indexed as <oid>:<value>:<issuer>. Leave OIDC issuer blank to match any issuer.";
+      "Fulcio extensions are indexed as <claim name>:<value>:<issuer>. Leave OIDC issuer blank to match any issuer.";
     $("key-hint").textContent =
       "PEM public keys are hashed in your browser as hex(SHA-256(SPKI DER)).";
   }

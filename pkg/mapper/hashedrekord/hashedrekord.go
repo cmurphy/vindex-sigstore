@@ -30,6 +30,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+
+	"github.com/sigstore/vindex-sigstore/pkg/mapper/claim"
 )
 
 // HashedRekordEntry represents the subset of a Rekor v2 hashedrekord v0.0.2
@@ -57,25 +59,9 @@ var (
 	// - 1.3.6.1.4.1.57264.1.8 (v2: ASN.1 DER UTF8String or OCTET STRING)
 	oidIssuerV1 = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 1}
 	oidIssuerV2 = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 8}
-
-	// Allowlisted Fulcio workload/repository identity OIDs:
-	// - .1.9:  Build Signer URI
-	// - .1.12: Source Repository URI
-	// - .1.15: Source Repository Identifier
-	// - .1.16: Source Repository Owner URI
-	// - .1.17: Source Repository Owner Identifier
-	// - .1.18: Build Config URI
-	allowlistedFulcioOIDs = []asn1.ObjectIdentifier{
-		{1, 3, 6, 1, 4, 1, 57264, 1, 9},
-		{1, 3, 6, 1, 4, 1, 57264, 1, 12},
-		{1, 3, 6, 1, 4, 1, 57264, 1, 15},
-		{1, 3, 6, 1, 4, 1, 57264, 1, 16},
-		{1, 3, 6, 1, 4, 1, 57264, 1, 17},
-		{1, 3, 6, 1, 4, 1, 57264, 1, 18},
-	}
 )
 
-// FormatKeyWithIssuer formats an identity or OID key coupled with its OIDC issuer.
+// FormatKeyWithIssuer formats an identity or extension key coupled with its OIDC issuer.
 // It always includes the ':' delimiter (even if issuer is empty) so that issuer-unscoped
 // lookups can query "<baseKey>:" as a prefix without matching sibling prefixes.
 func FormatKeyWithIssuer(baseKey, issuer string) string {
@@ -83,14 +69,15 @@ func FormatKeyWithIssuer(baseKey, issuer string) string {
 }
 
 // FormatSubjectPrefix returns the trailing-colon prefix ("<baseKey>:") used to query
-// all issuers for an exact subject or OID key via GET /keys?prefix=<prefix>.
+// all issuers for an exact subject or extension key via GET /keys?prefix=<prefix>.
 func FormatSubjectPrefix(baseKey string) string {
 	return baseKey + ":"
 }
 
-// FormatOIDKey formats an ASN.1 OID dot-string and its extension value.
-func FormatOIDKey(oid, value string) string {
-	return oid + ":" + value
+// FormatExtensionKey formats a Fulcio extension's claim name (for example
+// "source-repository-uri") and its extension value.
+func FormatExtensionKey(claimName, value string) string {
+	return claimName + ":" + value
 }
 
 // PublicKeyFingerprint computes the lowercase hex-encoded SHA-256 digest of DER-encoded PKIX public key bytes.
@@ -130,13 +117,15 @@ func extractIssuer(cert *x509.Certificate) string {
 	return issuer
 }
 
-func isAllowlistedOID(id asn1.ObjectIdentifier) bool {
-	for _, allowed := range allowlistedFulcioOIDs {
-		if id.Equal(allowed) {
-			return true
+// claimNameForOID returns the claim name of an allowlisted Fulcio extension.
+// Keys identify an extension by its claim name rather than its OID.
+func claimNameForOID(id asn1.ObjectIdentifier) (string, bool) {
+	for _, c := range claim.Allowlisted {
+		if id.Equal(c.FulcioOID) {
+			return c.Name, true
 		}
 	}
-	return false
+	return "", false
 }
 
 // IsValidPreimageKey reports whether key satisfies VIndex's canonical key invariants:
@@ -196,11 +185,11 @@ func MapLeaf(leaf []byte, rawEmit func(key []byte)) {
 					}
 				}
 
-				// Allowlisted Fulcio Workload/Repository OIDs
+				// Allowlisted Fulcio Workload/Repository extensions, keyed by claim name
 				for _, ext := range cert.Extensions {
-					if isAllowlistedOID(ext.Id) {
+					if claimName, ok := claimNameForOID(ext.Id); ok {
 						if val, err := parseExtensionString(ext.Value, false); err == nil && val != "" {
-							emit(FormatKeyWithIssuer(FormatOIDKey(ext.Id.String(), val), issuer))
+							emit(FormatKeyWithIssuer(FormatExtensionKey(claimName, val), issuer))
 						}
 					}
 				}

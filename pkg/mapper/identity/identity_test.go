@@ -25,6 +25,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sigstore/vindex-sigstore/pkg/mapper/claim"
 )
 
 func isValidPreimageKey(key string) bool {
@@ -129,12 +131,12 @@ func TestMapLeaf_OIDCGitHubWorkflowOnlyAllowlistedClaims(t *testing.T) {
 		{key: "subject", val: "repo:sigstore-conformance/extremely-dangerous-public-oidc-beacon:ref:refs/heads/main"},
 		{key: "identity", val: workflowURI},
 		// 6 allowlisted claims:
-		{key: ClaimBuildSignerURI, val: workflowURI},
-		{key: ClaimSourceRepositoryURI, val: repoURI},
-		{key: ClaimSourceRepositoryIdentifier, val: repoID},
-		{key: ClaimSourceRepositoryOwnerURI, val: ownerURI},
-		{key: ClaimSourceRepositoryOwnerIdentifier, val: ownerID},
-		{key: ClaimBuildConfigURI, val: buildConfigURI},
+		{key: claim.BuildSignerURI, val: workflowURI},
+		{key: claim.SourceRepositoryURI, val: repoURI},
+		{key: claim.SourceRepositoryIdentifier, val: repoID},
+		{key: claim.SourceRepositoryOwnerURI, val: ownerURI},
+		{key: claim.SourceRepositoryOwnerIdentifier, val: ownerID},
+		{key: claim.BuildConfigURI, val: buildConfigURI},
 		// 8 non-allowlisted / high-cardinality claims that MUST NOT be indexed:
 		{key: "build-signer-digest", val: "deadbeef1234"},
 		{key: "build-config-digest", val: "deadbeef1234"},
@@ -149,12 +151,12 @@ func TestMapLeaf_OIDCGitHubWorkflowOnlyAllowlistedClaims(t *testing.T) {
 	got := collectKeys(leaf)
 	want := []string{
 		FormatIdentityKey(workflowURI, issuer),
-		FormatClaimKey(ClaimBuildSignerURI, workflowURI, issuer),
-		FormatClaimKey(ClaimSourceRepositoryURI, repoURI, issuer),
-		FormatClaimKey(ClaimSourceRepositoryIdentifier, repoID, issuer),
-		FormatClaimKey(ClaimSourceRepositoryOwnerURI, ownerURI, issuer),
-		FormatClaimKey(ClaimSourceRepositoryOwnerIdentifier, ownerID, issuer),
-		FormatClaimKey(ClaimBuildConfigURI, buildConfigURI, issuer),
+		FormatClaimKey(claim.BuildSignerURI, workflowURI, issuer),
+		FormatClaimKey(claim.SourceRepositoryURI, repoURI, issuer),
+		FormatClaimKey(claim.SourceRepositoryIdentifier, repoID, issuer),
+		FormatClaimKey(claim.SourceRepositoryOwnerURI, ownerURI, issuer),
+		FormatClaimKey(claim.SourceRepositoryOwnerIdentifier, ownerID, issuer),
+		FormatClaimKey(claim.BuildConfigURI, buildConfigURI, issuer),
 	}
 
 	slices.Sort(got)
@@ -168,8 +170,8 @@ func TestMapLeaf_OIDCGitHubWorkflowOnlyAllowlistedClaims(t *testing.T) {
 			t.Errorf("emitted key %q violates VIndex canonical key contract", k)
 		}
 	}
-	repoKey := FormatClaimKey(ClaimSourceRepositoryURI, repoURI, issuer)
-	if !strings.HasPrefix(repoKey, FormatClaimPrefix(ClaimSourceRepositoryURI, repoURI)) {
+	repoKey := FormatClaimKey(claim.SourceRepositoryURI, repoURI, issuer)
+	if !strings.HasPrefix(repoKey, FormatClaimPrefix(claim.SourceRepositoryURI, repoURI)) {
 		t.Errorf("claim key %q does not match any-issuer claim prefix", repoKey)
 	}
 }

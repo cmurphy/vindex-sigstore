@@ -118,12 +118,12 @@ func TestMapLeafCertificate(t *testing.T) {
 		"Alice@Example.com:https://token.actions.githubusercontent.com",
 		"alice@example.com:https://token.actions.githubusercontent.com",
 		"https://github.com/sigstore/rekor-tiles/.github/workflows/release.yml@refs/tags/v1.0.0:https://token.actions.githubusercontent.com",
-		"1.3.6.1.4.1.57264.1.9:https://github.com/sigstore/rekor-tiles/.github/workflows/release.yml@refs/tags/v1.0.0:https://token.actions.githubusercontent.com",
-		"1.3.6.1.4.1.57264.1.12:https://github.com/sigstore/rekor-tiles:https://token.actions.githubusercontent.com",
-		"1.3.6.1.4.1.57264.1.15:890123456:https://token.actions.githubusercontent.com",
-		"1.3.6.1.4.1.57264.1.16:https://github.com/sigstore:https://token.actions.githubusercontent.com",
-		"1.3.6.1.4.1.57264.1.17:71096353:https://token.actions.githubusercontent.com",
-		"1.3.6.1.4.1.57264.1.18:https://github.com/sigstore/rekor-tiles/.github/workflows/release.yml@refs/tags/v1.0.0:https://token.actions.githubusercontent.com",
+		"build-signer-uri:https://github.com/sigstore/rekor-tiles/.github/workflows/release.yml@refs/tags/v1.0.0:https://token.actions.githubusercontent.com",
+		"source-repository-uri:https://github.com/sigstore/rekor-tiles:https://token.actions.githubusercontent.com",
+		"source-repository-identifier:890123456:https://token.actions.githubusercontent.com",
+		"source-repository-owner-uri:https://github.com/sigstore:https://token.actions.githubusercontent.com",
+		"source-repository-owner-identifier:71096353:https://token.actions.githubusercontent.com",
+		"build-config-uri:https://github.com/sigstore/rekor-tiles/.github/workflows/release.yml@refs/tags/v1.0.0:https://token.actions.githubusercontent.com",
 	}
 
 	if !slices.Equal(got, want) {
@@ -149,10 +149,10 @@ func TestMapLeafCertificate(t *testing.T) {
 	if !strings.HasPrefix(got[2], repoURIPrefix) {
 		t.Errorf("key %q does not match repo URI prefix %q", got[2], repoURIPrefix)
 	}
-	// 4. Issuer-unscoped OID lookup via FormatSubjectPrefix
-	oidPrefix := FormatSubjectPrefix(FormatOIDKey("1.3.6.1.4.1.57264.1.12", "https://github.com/sigstore/rekor-tiles"))
-	if !strings.HasPrefix(got[4], oidPrefix) {
-		t.Errorf("key %q does not match OID prefix %q", got[4], oidPrefix)
+	// 4. Issuer-unscoped extension lookup via FormatSubjectPrefix
+	extPrefix := FormatSubjectPrefix(FormatExtensionKey("source-repository-uri", "https://github.com/sigstore/rekor-tiles"))
+	if !strings.HasPrefix(got[4], extPrefix) {
+		t.Errorf("key %q does not match extension prefix %q", got[4], extPrefix)
 	}
 }
 

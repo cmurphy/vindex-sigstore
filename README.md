@@ -46,8 +46,10 @@ No normalization (such as lowercasing or whitespace trimming) is applied by eith
 | :--- | :--- | :--- | :--- |
 | **Email SAN** | `<email>:<issuer>` | `alice@example.com:https://accounts.google.com` | Any issuer: `alice@example.com:` |
 | **URI SAN** | `<uri>:<issuer>` | `https://github.com/org/repo/.github/workflows/release.yml@refs/tags/v1.0.0:https://token.actions.githubusercontent.com` | Any issuer: `<full_uri>:`<br>All refs for workflow: `https://github.com/org/repo/.github/workflows/release.yml@`<br>All workflows in repo: `https://github.com/org/repo/` |
-| **Fulcio OID** | `<oid>:<value>:<issuer>` | `1.3.6.1.4.1.57264.1.12:https://github.com/org/repo:https://token.actions.githubusercontent.com` | Any issuer: `1.3.6.1.4.1.57264.1.12:https://github.com/org/repo:`<br>All repos in org: `1.3.6.1.4.1.57264.1.12:https://github.com/org/` |
+| **Fulcio extension** | `<claim_name>:<value>:<issuer>` | `source-repository-uri:https://github.com/org/repo:https://token.actions.githubusercontent.com` | Any issuer: `source-repository-uri:https://github.com/org/repo:`<br>All repos in org: `source-repository-uri:https://github.com/org/` |
 | **Public Key** | `hex(SHA256(spki_der))` | `<64-char hex>` | Short hex prefix |
+
+Fulcio extensions are keyed by claim name, not by OID. The indexed claims and their OIDs are defined once in `pkg/mapper/claim` and shared with the `identity v0.0.1` MapFn. The indexed extensions are `build-signer-uri` (`1.3.6.1.4.1.57264.1.9`), `source-repository-uri` (`.1.12`), `source-repository-identifier` (`.1.15`), `source-repository-owner-uri` (`.1.16`), `source-repository-owner-identifier` (`.1.17`), and `build-config-uri` (`.1.18`).
 
 ### 2. `identity v0.0.1` (`pkg/mapper/identity`)
 
