@@ -16,11 +16,12 @@
 // Monitor leaf mapping logic and canonical key formatting functions shared
 // between the WASM MapFn, proxy services, and clients.
 //
-// Values are indexed exactly as they appear in the certificate. No
-// normalization (such as lowercasing or whitespace trimming) is applied, so
-// clients must query with the exact value. Values that would produce an
-// invalid VIndex key (for example, because they contain whitespace) are not
-// indexed.
+// Values are indexed as they appear in the certificate. No normalization
+// (such as lowercasing or whitespace trimming) is applied. Bytes outside
+// printable non-whitespace ASCII (0x21..0x7E) are percent-encoded in the key
+// (see PercentEncode), so clients must encode the keys and prefixes they
+// query the same way. A key that is empty, or longer than 1024 bytes after
+// encoding, is not indexed.
 package hashedrekord
 
 import (
@@ -128,6 +129,34 @@ func claimNameForOID(id asn1.ObjectIdentifier) (string, bool) {
 	return "", false
 }
 
+// PercentEncode replaces every byte of s outside printable non-whitespace
+// ASCII (0x21..0x7E) with "%XX", using uppercase hex digits. Bytes inside the
+// range, including '%', are left unchanged.
+//
+// MapLeaf applies it to every key it emits. Because it works byte by byte,
+// encoding a byte prefix of a value gives a prefix of the encoded value.
+func PercentEncode(s string) string {
+	const hexDigits = "0123456789ABCDEF"
+	n := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x21 || s[i] > 0x7E {
+			n++
+		}
+	}
+	if n == 0 {
+		return s
+	}
+	buf := make([]byte, 0, len(s)+2*n)
+	for i := 0; i < len(s); i++ {
+		if b := s[i]; b < 0x21 || b > 0x7E {
+			buf = append(buf, '%', hexDigits[b>>4], hexDigits[b&0x0F])
+		} else {
+			buf = append(buf, b)
+		}
+	}
+	return string(buf)
+}
+
 // IsValidPreimageKey reports whether key satisfies VIndex's canonical key invariants:
 // 1 <= len(key) <= 1024 and strictly printable non-whitespace ASCII (0x21..0x7E).
 func IsValidPreimageKey(key string) bool {
@@ -147,6 +176,7 @@ func IsValidPreimageKey(key string) bool {
 func MapLeaf(leaf []byte, rawEmit func(key []byte)) {
 	seen := make(map[string]struct{})
 	emit := func(key string) {
+		key = PercentEncode(key)
 		if !IsValidPreimageKey(key) {
 			return
 		}

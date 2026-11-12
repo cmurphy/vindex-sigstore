@@ -156,7 +156,7 @@ func TestMapLeafCertificate(t *testing.T) {
 	}
 }
 
-func TestMapLeafWhitespaceNotTrimmed(t *testing.T) {
+func TestMapLeafPercentEncoding(t *testing.T) {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
@@ -169,15 +169,21 @@ func TestMapLeafWhitespaceNotTrimmed(t *testing.T) {
 		return b
 	}
 	tmpl := &x509.Certificate{
-		SerialNumber:   big.NewInt(1),
-		NotBefore:      time.Now().Add(-time.Hour),
-		NotAfter:       time.Now().Add(time.Hour),
-		EmailAddresses: []string{"alice@example.com"},
+		SerialNumber: big.NewInt(1),
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		// Whitespace inside a SAN is encoded.
+		EmailAddresses: []string{"alice@example.com", "alice smith@example.com"},
 		ExtraExtensions: []pkix.Extension{
 			{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 8}, Value: marshalUTF8("https://accounts.google.com")},
-			// A value with surrounding whitespace is not trimmed; it produces an
-			// invalid key and is dropped.
+			// A literal '%' is inside the printable range and is left as is.
+			{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 9}, Value: marshalUTF8("https://example.com/100%")},
+			// Non-ASCII characters are encoded one UTF-8 byte at a time.
+			{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 12}, Value: marshalUTF8("https://github.com/org/répo")},
+			// Surrounding whitespace is not trimmed; it is encoded.
 			{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 15}, Value: marshalUTF8(" 890123456 ")},
+			// A key longer than 1024 bytes after encoding is dropped.
+			{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 16}, Value: marshalUTF8(strings.Repeat(" ", 400))},
 		},
 	}
 	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
@@ -191,9 +197,46 @@ func TestMapLeafWhitespaceNotTrimmed(t *testing.T) {
 	MapLeaf([]byte(leafJSON), func(key []byte) {
 		got = append(got, string(key))
 	})
-	want := []string{"alice@example.com:https://accounts.google.com"}
+	want := []string{
+		"alice@example.com:https://accounts.google.com",
+		"alice%20smith@example.com:https://accounts.google.com",
+		"build-signer-uri:https://example.com/100%:https://accounts.google.com",
+		"source-repository-uri:https://github.com/org/r%C3%A9po:https://accounts.google.com",
+		"source-repository-identifier:%20890123456%20:https://accounts.google.com",
+	}
 	if !slices.Equal(got, want) {
-		t.Errorf("MapLeaf() = %v, want %v", got, want)
+		t.Errorf("MapLeaf() = %q, want %q", got, want)
+	}
+	for _, k := range got {
+		if !IsValidPreimageKey(k) {
+			t.Errorf("emitted key %q is not a valid VIndex key", k)
+		}
+	}
+}
+
+func TestPercentEncode(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"", ""},
+		{"alice@example.com", "alice@example.com"},
+		{"a b", "a%20b"},
+		{"\t\r\n", "%09%0D%0A"},
+		{"é", "%C3%A9"},
+		{"\x00\x7f\xff", "%00%7F%FF"},
+		{"!~", "!~"},
+		{"100%", "100%"},
+		{"a%20b", "a%20b"},
+	} {
+		if got := PercentEncode(tc.in); got != tc.want {
+			t.Errorf("PercentEncode(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	// Encoding a byte prefix of a value gives a prefix of the encoded value,
+	// even when the prefix ends inside a multi-byte character.
+	value := "https://github.com/org/répo"
+	for i := 0; i <= len(value); i++ {
+		if p := PercentEncode(value[:i]); !strings.HasPrefix(PercentEncode(value), p) {
+			t.Errorf("PercentEncode(%q) = %q is not a prefix of the encoded value", value[:i], p)
+		}
 	}
 }
 

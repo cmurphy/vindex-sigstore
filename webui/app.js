@@ -99,6 +99,19 @@ function escapeHTML(s) {
 
 const fmtInt = (n) => Number(n || 0).toLocaleString("en-US");
 
+// Percent-encodes every UTF-8 byte outside printable non-whitespace ASCII
+// (0x21..0x7E) as %XX with uppercase hex, matching the hashedrekord MapFn.
+// A literal "%" is left as is.
+function percentEncodeKey(str) {
+  let out = "";
+  for (const b of new TextEncoder().encode(str)) {
+    out += b < 0x21 || b > 0x7e
+      ? "%" + b.toString(16).toUpperCase().padStart(2, "0")
+      : String.fromCharCode(b);
+  }
+  return out;
+}
+
 function validatePrintableKey(key) {
   if (!key || key.length > 1024) {
     throw new Error("Key must be 1..1024 characters");
@@ -198,6 +211,7 @@ async function buildQuery() {
         key = `${subject}:${issuer}`;
         isPrefix = false;
       }
+      key = percentEncodeKey(key);
       validatePrintableKey(key);
     }
 
@@ -242,6 +256,7 @@ async function buildQuery() {
         key = `${claimName}:${value}:${issuer}`;
         isPrefix = false;
       }
+      key = percentEncodeKey(key);
       validatePrintableKey(key);
     }
 
