@@ -77,14 +77,18 @@ On page load, `app.js` fetches a relative [`config.json`](webui/config.json) fil
   "shardFormat": "hashedrekord v0.0.2",
   "shardLabel": "log2025-1.rekor.sigstore.dev · hashedrekord v0.0.2",
   "vindexBaseURL": "",
-  "inputLogURL": "https://log2025-1.rekor.sigstore.dev/api/v2"
+  "inputLogURL": "https://log2025-1.rekor.sigstore.dev/api/v2",
+  "inputLogPublicKey": "log2025-1.rekor.sigstore.dev+cf119915+AbfK5adZJxsI323FwGD2AJJ9F4i89cfDuLdGJBIYntuO"
 }
 ```
 
 * **`shardType`:** `"hashedrekord"` (default) or `"identity"` (enables double-SHA-256 OIDC key construction, algorithm-prefixed SPKI public key hashing, and binary `0x01` leaf decoding).
 * **`shardFormat` / `shardLabel`:** Display strings shown in the UI's shard badge and proof inspector.
 * **`vindexBaseURL`:** Base URL of the `vindexd` read API (empty `""` when served from the same origin/load balancer path as `/keys` and `/values`, or a full origin such as `"https://vindex.rekor.sigstore.dev"` when hosted on a separate static domain).
-* **`inputLogURL`:** Base `tlog-tiles` URL of the upstream Rekor shard used when inspecting raw log leaves (`/tile/entries/...`).
+* **`inputLogURL`:** Base `tlog-tiles` URL of the upstream Rekor shard used when inspecting raw log leaves (`/tile/entries/...`) and when checking the Rekor log state (`/checkpoint` and `/tile/<level>/...`).
+* **`inputLogPublicKey`:** Rekor's checkpoint verifier key in note format (`<name>+<key hash>+<base64 key>`), the same value as `vindexd --input_log_pubkey`. Optional.
+
+On every search the page checks the Rekor log size and root hash in the `/keys` response against Rekor itself. It fetches Rekor's checkpoint, verifies the checkpoint signature against `inputLogPublicKey`, and uses Rekor's hash tiles to check that the size and root hash are a prefix of the log the checkpoint commits to. A mismatch is reported as an error and the results are withheld. If the check cannot be completed, the results are shown with a warning. The page verifies Ed25519 and ML-DSA-44 checkpoint signatures with the browser's built-in Web Crypto API. With no key configured, with another key type, or in a browser whose Web Crypto API lacks the algorithm (ML-DSA-44 is not yet available in every browser), it still runs the consistency check but reports that the signature was not verified.
 
 In Kubernetes/Nginx deployments, mount a `ConfigMap` over `/usr/share/nginx/html/config.json` (or render it at container startup via Nginx's `/etc/nginx/templates/` `envsubst`). In GCS deployments, upload a shard-specific `config.json` alongside `index.html` in each bucket or path prefix.
 

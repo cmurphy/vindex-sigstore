@@ -20,6 +20,7 @@ const CFG = {
   shardLabel: "log2025-1.rekor.sigstore.dev · hashedrekord v0.0.2",
   vindexBaseURL: "",
   inputLogURL: "https://log2025-1.rekor.sigstore.dev/api/v2",
+  inputLogPublicKey: "",
   proxyInputLog: false,
 };
 
@@ -385,6 +386,8 @@ function parseKeysResponse(keysBody) {
   }
 
   let mptRoot = "";
+  let inputOrigin = "";
+  let inputRoot = "";
   let inputLogSize = 0;
   let outputLogSize = 0;
 
@@ -399,6 +402,8 @@ function parseKeysResponse(keysBody) {
           for (const ll of rawLeaf.split("\n")) {
             if (ll.startsWith("mpt-root ")) mptRoot = ll.slice(9).trim();
             else if (ll.startsWith("input-size ")) inputLogSize = parseInt(ll.slice(11).trim(), 10) || 0;
+            else if (ll.startsWith("input-origin ")) inputOrigin = ll.slice(13);
+            else if (ll.startsWith("input-root ")) inputRoot = ll.slice(11).trim();
           }
         } catch (err) {
           console.error("Failed to decode extra state leaf:", err);
@@ -413,7 +418,7 @@ function parseKeysResponse(keysBody) {
     }
   }
 
-  return { discovered, mptRoot, inputLogSize, outputLogSize };
+  return { discovered, mptRoot, inputOrigin, inputRoot, inputLogSize, outputLogSize };
 }
 
 function parseValuesResponse(valuesBody) {
@@ -444,11 +449,289 @@ function parseValuesResponse(valuesBody) {
   return { indices, nextBefore };
 }
 
+// ---------- Rekor Log State Check ----------
+//
+// A /keys response states the Rekor log size and root hash the index covers,
+// but carries no Rekor signature. These functions fetch Rekor's own checkpoint
+// and use Rekor's hash tiles to check that the stated size and root hash are a
+// prefix of the log that checkpoint commits to (RFC 6962 consistency).
+
+// Thrown when the check ran and the response does not match Rekor's log, as
+// opposed to the check not being able to run.
+class RekorCheckFailure extends Error {}
+
+function inputLogBase() {
+  return CFG.proxyInputLog ? "inputlog" : (CFG.inputLogURL || "").replace(/\/+$/, "");
+}
+
+function b64ToBytes(b64) {
+  return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+}
+
+function bytesEqual(a, b) {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+function parseCheckpoint(text) {
+  const sep = text.indexOf("\n\n");
+  if (sep < 0) throw new Error("Rekor's checkpoint is malformed");
+  const body = text.slice(0, sep + 1);
+  const [origin, sizeLine, rootLine] = body.split("\n");
+  const size = Number(sizeLine);
+  if (!origin || !/^(0|[1-9][0-9]*)$/.test(sizeLine || "") || !Number.isSafeInteger(size) || !rootLine) {
+    throw new Error("Rekor's checkpoint is malformed");
+  }
+  const sigs = [];
+  for (const line of text.slice(sep + 2).split("\n")) {
+    const sp = line.lastIndexOf(" ");
+    if (line.startsWith("— ") && sp > 2) {
+      sigs.push({ name: line.slice(2, sp), sig: b64ToBytes(line.slice(sp + 1)) });
+    }
+  }
+  return { body, origin, size, root: b64ToBytes(rootLine), sigs };
+}
+
+async function fetchInputLogCheckpoint() {
+  const url = `${inputLogBase()}/checkpoint`;
+  const resp = await fetch(url, { cache: "no-store" });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status} fetching ${url}`);
+  return parseCheckpoint(await resp.text());
+}
+
+// Builds the message an ML-DSA-44 checkpoint signature covers: the
+// CosignedSubtree structure from c2sp.org/tlog-cosignature for the whole tree,
+//   "subtree/v1\n\0" || len(name) || name || timestamp (8 bytes) ||
+//   len(origin) || origin || start = 0 (8) || end = size (8) || root hash (32).
+function cosignedSubtreeMessage(name, timestamp, cp) {
+  const enc = new TextEncoder();
+  const label = enc.encode("subtree/v1\n\0");
+  const nameBytes = enc.encode(name);
+  const originBytes = enc.encode(cp.origin);
+  const msg = new Uint8Array(label.length + 1 + nameBytes.length + 8 + 1 + originBytes.length + 16 + cp.root.length);
+  let off = 0;
+  const put = (bytes) => {
+    msg.set(bytes, off);
+    off += bytes.length;
+  };
+  put(label);
+  put([nameBytes.length]);
+  put(nameBytes);
+  put(timestamp);
+  put([originBytes.length]);
+  put(originBytes);
+  off += 8; // start = 0
+  new DataView(msg.buffer).setBigUint64(off, BigInt(cp.size));
+  off += 8;
+  put(cp.root);
+  return msg;
+}
+
+// Verifies the log's own signature on a checkpoint against CFG.inputLogPublicKey,
+// a note verifier key ("<name>+<key hash>+<base64 key>"). Returns "" when the
+// signature is valid, or the reason it could not be checked. Ed25519 (type 0x01)
+// and ML-DSA-44 (type 0x06) keys are verified with the browser's Web Crypto API,
+// when the browser supports the algorithm. Throws RekorCheckFailure on a missing
+// or bad signature.
+async function checkpointSignatureStatus(cp) {
+  const vkey = (CFG.inputLogPublicKey || "").trim();
+  if (!vkey) return "no Rekor public key is configured";
+  // The base64 key can itself contain "+", so split on the first two only.
+  const i = vkey.indexOf("+");
+  const j = vkey.indexOf("+", i + 1);
+  if (i < 1 || j < 0) throw new Error("inputLogPublicKey is malformed");
+  const name = vkey.slice(0, i);
+  const keyHash = vkey.slice(i + 1, j);
+  const keyBytes = b64ToBytes(vkey.slice(j + 1));
+  const nameBytes = new TextEncoder().encode(`${name}\n`);
+  const hashInput = new Uint8Array(nameBytes.length + keyBytes.length);
+  hashInput.set(nameBytes, 0);
+  hashInput.set(keyBytes, nameBytes.length);
+  if (bytesToHex((await sha256Bytes(hashInput)).subarray(0, 4)) !== keyHash) {
+    throw new Error("inputLogPublicKey has the wrong key hash");
+  }
+
+  // A signature line holds a 4-byte key hash, then for ML-DSA-44 an 8-byte
+  // timestamp, then the signature.
+  let alg;
+  if (keyBytes[0] === 0x01 && keyBytes.length === 33) {
+    alg = { name: "Ed25519", format: "raw", sigOffset: 4, sigLength: 64 };
+  } else if (keyBytes[0] === 0x06 && keyBytes.length === 1313) {
+    alg = { name: "ML-DSA-44", format: "raw-public", sigOffset: 12, sigLength: 2420 };
+  } else {
+    return "this page can only verify Ed25519 and ML-DSA-44 Rekor keys";
+  }
+  let key;
+  try {
+    key = await crypto.subtle.importKey(alg.format, keyBytes.subarray(1), { name: alg.name }, false, ["verify"]);
+  } catch {
+    return `this browser does not support ${alg.name} verification`;
+  }
+  const entry = cp.sigs.find(
+    (s) =>
+      s.name === name &&
+      s.sig.length === alg.sigOffset + alg.sigLength &&
+      bytesToHex(s.sig.subarray(0, 4)) === keyHash,
+  );
+  if (!entry) throw new RekorCheckFailure("Rekor's checkpoint is not signed by the configured Rekor key");
+  const message =
+    alg.name === "Ed25519"
+      ? new TextEncoder().encode(cp.body)
+      : cosignedSubtreeMessage(name, entry.sig.subarray(4, 12), cp);
+  const valid = await crypto.subtle.verify({ name: alg.name }, key, entry.sig.subarray(alg.sigOffset), message);
+  if (!valid) throw new RekorCheckFailure("The signature on Rekor's checkpoint is invalid");
+  return "";
+}
+
+// RFC 6962 interior node hash.
+async function hashChildren(left, right) {
+  const buf = new Uint8Array(65);
+  buf[0] = 0x01;
+  buf.set(left, 1);
+  buf.set(right, 33);
+  return sha256Bytes(buf);
+}
+
+// Splits the leaf range [begin, end) into the largest aligned complete
+// subtrees, left to right. A subtree {level, index} covers leaves
+// [index * 2^level, (index + 1) * 2^level).
+function subtreesCovering(begin, end) {
+  const out = [];
+  let pos = begin;
+  while (pos < end) {
+    let level = 0;
+    let size = 1;
+    while (pos % (size * 2) === 0 && pos + size * 2 <= end) {
+      size *= 2;
+      level += 1;
+    }
+    out.push({ level, index: pos / size });
+    pos += size;
+  }
+  return out;
+}
+
+// Fetches one tlog-tiles hash tile of a log with treeSize leaves. Tile `level`
+// holds the hashes of complete subtrees of 256^level leaves.
+async function fetchHashTile(level, index, treeSize, cache) {
+  const count = Math.floor(treeSize / TILE_SIZE ** level);
+  const width = index < Math.floor(count / TILE_SIZE) ? TILE_SIZE : count % TILE_SIZE;
+  let url = `${inputLogBase()}/tile/${level}/${formatTileIndex(index)}`;
+  if (width < TILE_SIZE) url += `.p/${width}`;
+  if (!cache.has(url)) {
+    cache.set(url, (async () => {
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status} fetching ${url}`);
+      const data = new Uint8Array(await resp.arrayBuffer());
+      if (data.length !== width * 32) throw new Error(`unexpected size for hash tile ${url}`);
+      return data;
+    })());
+  }
+  return cache.get(url);
+}
+
+// Returns the hash of a complete subtree. A level that is not a multiple of 8
+// is not stored in a tile, so it is hashed up from the tile level below it.
+async function subtreeHash(node, treeSize, cache) {
+  const span = 2 ** (node.level % 8);
+  const first = node.index * span;
+  const offset = first % TILE_SIZE;
+  const tile = await fetchHashTile(Math.floor(node.level / 8), Math.floor(first / TILE_SIZE), treeSize, cache);
+  if ((offset + span) * 32 > tile.length) throw new Error("hash tile is too short");
+  let hashes = [];
+  for (let i = offset; i < offset + span; i++) hashes.push(tile.subarray(i * 32, (i + 1) * 32));
+  while (hashes.length > 1) {
+    const next = [];
+    for (let i = 0; i < hashes.length; i += 2) next.push(await hashChildren(hashes[i], hashes[i + 1]));
+    hashes = next;
+  }
+  return hashes[0];
+}
+
+// Computes the RFC 6962 root from subtrees {level, index, hash} that cover
+// [0, n) left to right. Adjacent siblings are merged first, then the
+// remaining subtrees are folded from the right.
+async function rootFromSubtrees(nodes) {
+  const stack = [];
+  for (let cur of nodes) {
+    while (stack.length) {
+      const top = stack[stack.length - 1];
+      if (top.level !== cur.level || top.index % 2 !== 0 || top.index + 1 !== cur.index) break;
+      stack.pop();
+      cur = { level: cur.level + 1, index: top.index / 2, hash: await hashChildren(top.hash, cur.hash) };
+    }
+    stack.push(cur);
+  }
+  let hash = stack.pop().hash;
+  while (stack.length) hash = await hashChildren(stack.pop().hash, hash);
+  return hash;
+}
+
+// Checks the Rekor log state from a parsed /keys response against Rekor.
+// Returns {status, text}: "ok" when the state is consistent with a checkpoint
+// whose signature was verified, "warn" when the check could not be completed,
+// and "fail" when the state does not match Rekor's log.
+async function checkInputLogState(commit) {
+  try {
+    const size = commit.inputLogSize;
+    if (!commit.inputOrigin || !commit.inputRoot || !(size > 0)) {
+      throw new Error("the response carries no Rekor log state");
+    }
+    const claimedRoot = b64ToBytes(commit.inputRoot);
+
+    let cp = await fetchInputLogCheckpoint();
+    if (cp.size < size) cp = await fetchInputLogCheckpoint();
+    if (cp.origin !== commit.inputOrigin) {
+      throw new RekorCheckFailure(
+        `The index is built from log "${commit.inputOrigin}", but Rekor's checkpoint is for "${cp.origin}"`,
+      );
+    }
+    const unsigned = await checkpointSignatureStatus(cp);
+    if (cp.size < size) {
+      throw new Error(`Rekor's checkpoint (size ${fmtInt(cp.size)}) is behind the index (size ${fmtInt(size)})`);
+    }
+
+    const mismatch = new RekorCheckFailure(
+      `The index claims a root hash for Rekor log size ${fmtInt(size)} that does not match Rekor's log`,
+    );
+    if (cp.size === size) {
+      if (!bytesEqual(cp.root, claimedRoot)) throw mismatch;
+    } else {
+      const tiles = new Map();
+      const withHashes = (nodes) =>
+        Promise.all(nodes.map(async (n) => ({ ...n, hash: await subtreeHash(n, cp.size, tiles) })));
+      const prefix = await withHashes(subtreesCovering(0, size));
+      const rest = await withHashes(subtreesCovering(size, cp.size));
+      // First tie the fetched hashes to the checkpoint, then compare the prefix.
+      if (!bytesEqual(await rootFromSubtrees(prefix.concat(rest)), cp.root)) {
+        throw new Error("Rekor's hash tiles do not match its checkpoint");
+      }
+      if (!bytesEqual(await rootFromSubtrees(prefix), claimedRoot)) throw mismatch;
+    }
+
+    if (unsigned) {
+      return {
+        status: "warn",
+        text: `Rekor log state matches Rekor's checkpoint (size ${fmtInt(cp.size)}), but the checkpoint signature was not verified: ${unsigned}`,
+      };
+    }
+    return {
+      status: "ok",
+      text: `Rekor log state verified against Rekor's signed checkpoint (size ${fmtInt(cp.size)})`,
+    };
+  } catch (err) {
+    if (err instanceof RekorCheckFailure) return { status: "fail", text: err.message };
+    return { status: "warn", text: `Rekor log state not checked: ${err.message}` };
+  }
+}
+
 // ---------- Rendering ----------
 
 const CHECK_SVG =
   '<span class="check" aria-hidden="true"><svg viewBox="0 0 12 12"><path d="M2.5 6.3l2.3 2.3 4.7-5" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>';
+const WARN_MARK = '<span class="check check--warn" aria-hidden="true">!</span>';
 
+// Each item is a string, or {status, text} where status "warn" marks a check
+// that could not be completed.
 function showBanner(kind, title, captionHTML, items, showProofBtn = false) {
   const banner = $("verify-banner");
   banner.hidden = false;
@@ -458,7 +741,11 @@ function showBanner(kind, title, captionHTML, items, showProofBtn = false) {
   $("view-raw-proof").hidden = !showProofBtn;
   $("copy-deep-link").hidden = !showProofBtn;
   $("verify-list").innerHTML = (items || [])
-    .map((t) => `<li class="verify__item">${CHECK_SVG}<span>${escapeHTML(t)}</span></li>`)
+    .map((t) => {
+      const item = typeof t === "string" ? { status: "ok", text: t } : t;
+      const mark = item.status === "warn" ? WARN_MARK : CHECK_SVG;
+      return `<li class="verify__item">${mark}<span>${escapeHTML(item.text)}</span></li>`;
+    })
     .join("");
 }
 
@@ -605,6 +892,9 @@ async function executeSearch(opts = {}) {
     state.nextBefore = null;
     state.page = 0;
 
+    // Runs alongside the /values fetch below.
+    const rekorCheck = checkInputLogState(parsedKeys);
+
     $("results-section").hidden = false;
     renderKeys();
 
@@ -612,17 +902,27 @@ async function executeSearch(opts = {}) {
 
     if (state.discoveredKeys.length === 0) {
       renderEntries();
+      const rekor = await rekorCheck;
+      if (rekor.status === "fail") {
+        showRekorCheckFailure(rekor);
+        return;
+      }
       showBanner(
         "empty",
         q.isPrefix ? "No matching keys (Prefix proof received)" : "Not found (Non-inclusion proof received)",
         caption,
-        [],
+        [rekor],
         true,
       );
       return;
     }
 
     await fetchValuesForSelectedKey(false);
+    const rekor = await rekorCheck;
+    if (rekor.status === "fail") {
+      showRekorCheckFailure(rekor);
+      return;
+    }
 
     const n = state.discoveredKeys.length;
     showBanner(
@@ -633,6 +933,7 @@ async function executeSearch(opts = {}) {
         "Output Log inclusion proof",
         q.isPrefix ? `MPT prefix proof — ${n} ${n === 1 ? "key" : "keys"}` : "MPT inclusion proof",
         `Value log compact range (${fmtInt(state.indices.length)}${state.nextBefore !== null ? "+" : ""} entries)`,
+        rekor,
       ],
       true,
     );
@@ -640,6 +941,12 @@ async function executeSearch(opts = {}) {
     console.error(e);
     showBanner("error", "Query failed", escapeHTML(e.message), []);
   }
+}
+
+// The response does not match Rekor's log: report it and withhold the results.
+function showRekorCheckFailure(rekor) {
+  $("results-section").hidden = true;
+  showBanner("error", "Rekor log check failed", escapeHTML(rekor.text), [], true);
 }
 
 // ---------- Leaf Inspection ----------
@@ -699,9 +1006,7 @@ async function decodeLeaf(leafBytes) {
 }
 
 async function fetchTileBundle(formattedTile, partialCount) {
-  const base = CFG.proxyInputLog
-    ? "inputlog"
-    : (CFG.inputLogURL || "").replace(/\/+$/, "");
+  const base = inputLogBase();
   let url = `${base}/tile/entries/${formattedTile}`;
   if (partialCount > 0) {
     url += `.p/${partialCount}`;

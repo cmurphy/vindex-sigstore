@@ -701,6 +701,14 @@ code,
   height: 11px;
 }
 
+.check--warn {
+  background: #b7791f;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .empty-state {
   padding: 24px 12px;
   text-align: center;

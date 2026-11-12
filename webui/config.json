@@ -3,5 +3,6 @@
   "shardFormat": "hashedrekord v0.0.2",
   "shardLabel": "log2025-1.rekor.sigstore.dev · hashedrekord v0.0.2",
   "vindexBaseURL": "",
-  "inputLogURL": "https://log2025-1.rekor.sigstore.dev/api/v2"
+  "inputLogURL": "https://log2025-1.rekor.sigstore.dev/api/v2",
+  "inputLogPublicKey": "log2025-1.rekor.sigstore.dev+cf119915+AbfK5adZJxsI323FwGD2AJJ9F4i89cfDuLdGJBIYntuO"
 }
