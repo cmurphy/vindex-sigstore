@@ -63,7 +63,7 @@ func TestMapLeafCertificate(t *testing.T) {
 		NotBefore:      time.Now().Add(-time.Hour),
 		NotAfter:       time.Now().Add(time.Hour),
 		EmailAddresses: []string{"Alice@Example.com", "alice@example.com"},
-		URIs:           []*url.URL{uriSAN, uriSAN},
+		URIs:           []*url.URL{uriSAN},
 		ExtraExtensions: []pkix.Extension{
 			{
 				Id:    asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 8},
@@ -74,10 +74,6 @@ func TestMapLeafCertificate(t *testing.T) {
 				Value: buildSignerURIBytes,
 			},
 			{
-				// Note: duplicate extensions cannot be used to exercise per-leaf
-				// deduplication because crypto/x509.ParseCertificate rejects
-				// certificates containing duplicate extensions. Deduplication is
-				// exercised via the duplicate (case-variant) email and URI SANs above.
 				Id:    asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 12},
 				Value: repoURIBytes,
 			},
@@ -131,8 +127,8 @@ func TestMapLeafCertificate(t *testing.T) {
 	}
 
 	// Verify prefix queries (/keys?prefix=) match the emitted keys as expected:
-	// 1. Issuer-unscoped email lookup via FormatSubjectPrefix
-	emailPrefix := FormatSubjectPrefix("alice@example.com")
+	// 1. Issuer-unscoped email lookup: the subject followed by ':'
+	emailPrefix := "alice@example.com:"
 	if !strings.HasPrefix(got[1], emailPrefix) {
 		t.Errorf("key %q does not match subject prefix %q", got[1], emailPrefix)
 	}
@@ -149,8 +145,8 @@ func TestMapLeafCertificate(t *testing.T) {
 	if !strings.HasPrefix(got[2], repoURIPrefix) {
 		t.Errorf("key %q does not match repo URI prefix %q", got[2], repoURIPrefix)
 	}
-	// 4. Issuer-unscoped extension lookup via FormatSubjectPrefix
-	extPrefix := FormatSubjectPrefix(FormatExtensionKey("source-repository-uri", "https://github.com/sigstore/rekor-tiles"))
+	// 4. Issuer-unscoped extension lookup: the claim name and value followed by ':'
+	extPrefix := "source-repository-uri:https://github.com/sigstore/rekor-tiles:"
 	if !strings.HasPrefix(got[4], extPrefix) {
 		t.Errorf("key %q does not match extension prefix %q", got[4], extPrefix)
 	}
@@ -282,5 +278,53 @@ func TestIsValidPreimageKey(t *testing.T) {
 	}
 	if IsValidPreimageKey(string([]byte{0x30, 0x59, 0x30, 0x13})) {
 		t.Error("expected raw ASN.1 DER bytes containing 0x13 to fail")
+	}
+}
+
+func TestExtractIssuer(t *testing.T) {
+	derUTF8, err := asn1.Marshal("https://v2.example.com")
+	if err != nil {
+		t.Fatalf("asn1.Marshal: %v", err)
+	}
+	v1 := pkix.Extension{Id: oidIssuerV1, Value: []byte("https://v1.example.com")}
+	v2 := pkix.Extension{Id: oidIssuerV2, Value: derUTF8}
+
+	for _, tc := range []struct {
+		name string
+		exts []pkix.Extension
+		want string
+	}{
+		{"none", nil, ""},
+		{"v1 only is used as raw bytes", []pkix.Extension{v1}, "https://v1.example.com"},
+		{"v2 only is DER-decoded", []pkix.Extension{v2}, "https://v2.example.com"},
+		{"v2 preferred when v1 comes first", []pkix.Extension{v1, v2}, "https://v2.example.com"},
+		{"v2 preferred when v2 comes first", []pkix.Extension{v2, v1}, "https://v2.example.com"},
+		{"undecodable v2 falls back to v1", []pkix.Extension{{Id: oidIssuerV2, Value: []byte("not DER")}, v1}, "https://v1.example.com"},
+	} {
+		if got := extractIssuer(&x509.Certificate{Extensions: tc.exts}); got != tc.want {
+			t.Errorf("%s: extractIssuer() = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestMapLeafMalformed(t *testing.T) {
+	leaf := func(verifier string) string {
+		return `{"spec":{"hashedRekordV002":{"signature":{"verifier":` + verifier + `}}}}`
+	}
+	for _, tc := range []struct {
+		name string
+		leaf string
+	}{
+		{"not JSON", "not json"},
+		{"no verifier", leaf(`{}`)},
+		{"empty certificate", leaf(`{"x509Certificate":{"rawBytes":""}}`)},
+		{"certificate is not base64", leaf(`{"x509Certificate":{"rawBytes":"!!!"}}`)},
+		{"certificate is not DER", leaf(`{"x509Certificate":{"rawBytes":"bm90IGEgY2VydA=="}}`)},
+		{"empty public key", leaf(`{"publicKey":{"rawBytes":""}}`)},
+		{"public key is not base64", leaf(`{"publicKey":{"rawBytes":"!!!"}}`)},
+	} {
+		MapLeaf([]byte(tc.leaf), func(key []byte) {
+			t.Errorf("%s: unexpected key %q", tc.name, key)
+		})
 	}
 }

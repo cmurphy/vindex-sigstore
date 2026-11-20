@@ -13,8 +13,7 @@
 // limitations under the License.
 
 // Package identity implements the Rekor PQC (c2sp.org/identity-transparency
-// version 0x01 / identity v0.0.1) leaf mapping logic and client canonical key
-// formatting helpers.
+// version 0x01 / identity v0.0.1) leaf mapping logic.
 //
 // Version 0x01 binary leaf layout:
 //
@@ -26,10 +25,7 @@ package identity
 
 import (
 	"crypto/sha256"
-	"encoding/asn1"
 	"encoding/hex"
-	"errors"
-	"fmt"
 
 	"github.com/sigstore/vindex-sigstore/pkg/mapper/claim"
 )
@@ -38,7 +34,7 @@ const (
 	// LeafVersionV1 is the leading version byte for c2sp.org/identity-transparency v1 leaves.
 	LeafVersionV1 byte = 0x01
 
-	hashSize   = sha256.Size // 32 bytes
+	hashSize   = sha256.Size  // 32 bytes
 	kvPairSize = 2 * hashSize // 64 bytes: H(H(key)) || H(H(value))
 	// minLeafSize = 1 (version) + 32 (root_of_trust) + 32 (message) + 32 (receipt) = 97 bytes.
 	minLeafSize = 1 + 3*hashSize
@@ -46,12 +42,6 @@ const (
 	// Standard OIDC key-value pair names in identity v0.0.1 leaves.
 	ClaimIdentity = "identity"
 	ClaimIssuer   = "issuer"
-
-	// Public key algorithm identifiers prefixed to SPKI DER in root_of_trust.
-	AlgMLDSA44 = "ML-DSA-44"
-	AlgMLDSA65 = "ML-DSA-65"
-	AlgMLDSA87 = "ML-DSA-87"
-	AlgEd25519 = "Ed25519"
 )
 
 var (
@@ -59,12 +49,6 @@ var (
 	keyHashIdentity [hashSize]byte
 	keyHashIssuer   [hashSize]byte
 	allowlistedKH   map[[hashSize]byte]struct{}
-
-	// SPKI AlgorithmIdentifier OIDs (RFC 9881 for ML-DSA, RFC 8410 for Ed25519).
-	oidMLDSA44 = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 3, 17}
-	oidMLDSA65 = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 3, 18}
-	oidMLDSA87 = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 3, 19}
-	oidEd25519 = asn1.ObjectIdentifier{1, 3, 101, 112}
 )
 
 func init() {
@@ -80,98 +64,6 @@ func init() {
 func DoubleSHA256(b []byte) [hashSize]byte {
 	first := sha256.Sum256(b)
 	return sha256.Sum256(first[:])
-}
-
-// DoubleSHA256Hex returns the 64-character lowercase hex encoding of SHA256(SHA256([]byte(s))).
-func DoubleSHA256Hex(s string) string {
-	d := DoubleSHA256([]byte(s))
-	return hex.EncodeToString(d[:])
-}
-
-// FormatIdentityKey formats an exact OIDC identity lookup key for an identity v0.0.1 shard:
-//
-//	hex(SHA256(SHA256(identityVal))):hex(SHA256(SHA256(issuer)))
-func FormatIdentityKey(identityVal, issuer string) string {
-	return DoubleSHA256Hex(identityVal) + ":" + DoubleSHA256Hex(issuer)
-}
-
-// FormatIdentityPrefix formats an any-issuer OIDC identity prefix lookup key:
-//
-//	hex(SHA256(SHA256(identityVal))):
-func FormatIdentityPrefix(identityVal string) string {
-	return DoubleSHA256Hex(identityVal) + ":"
-}
-
-// FormatClaimKey formats an exact OIDC claim lookup key for an identity v0.0.1 shard:
-//
-//	hex(SHA256(SHA256(claimName))):hex(SHA256(SHA256(value))):hex(SHA256(SHA256(issuer)))
-func FormatClaimKey(claimName, value, issuer string) string {
-	return DoubleSHA256Hex(claimName) + ":" + DoubleSHA256Hex(value) + ":" + DoubleSHA256Hex(issuer)
-}
-
-// FormatClaimPrefix formats an any-issuer OIDC claim prefix lookup key:
-//
-//	hex(SHA256(SHA256(claimName))):hex(SHA256(SHA256(value))):
-func FormatClaimPrefix(claimName, value string) string {
-	return DoubleSHA256Hex(claimName) + ":" + DoubleSHA256Hex(value) + ":"
-}
-
-type spkiHeader struct {
-	Algorithm struct {
-		Algorithm  asn1.ObjectIdentifier
-		Parameters asn1.RawValue `asn1:"optional"`
-	}
-	SubjectPublicKey asn1.BitString
-}
-
-// PublicKeyAlgorithmFromSPKI extracts the identity-transparency algorithm prefix
-// ("ML-DSA-44", "ML-DSA-65", "ML-DSA-87", or "Ed25519") from DER-encoded SPKI bytes.
-func PublicKeyAlgorithmFromSPKI(spkiDER []byte) (string, error) {
-	if len(spkiDER) == 0 {
-		return "", errors.New("empty SPKI DER public key")
-	}
-	var spki spkiHeader
-	rest, err := asn1.Unmarshal(spkiDER, &spki)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse SPKI DER: %w", err)
-	}
-	if len(rest) != 0 {
-		return "", errors.New("trailing bytes after SPKI DER")
-	}
-	oid := spki.Algorithm.Algorithm
-	switch {
-	case oid.Equal(oidMLDSA44):
-		return AlgMLDSA44, nil
-	case oid.Equal(oidMLDSA65):
-		return AlgMLDSA65, nil
-	case oid.Equal(oidMLDSA87):
-		return AlgMLDSA87, nil
-	case oid.Equal(oidEd25519):
-		return AlgEd25519, nil
-	default:
-		return "", fmt.Errorf("unsupported SPKI public key algorithm OID %s", oid.String())
-	}
-}
-
-// PublicKeyFingerprintWithAlg computes hex(SHA256(alg || spkiDER)), matching the
-// root_of_trust digest stored in identity v0.0.1 managed public key leaves.
-func PublicKeyFingerprintWithAlg(alg string, spkiDER []byte) string {
-	h := sha256.New()
-	h.Write([]byte(alg))
-	h.Write(spkiDER)
-	var sum [hashSize]byte
-	h.Sum(sum[:0])
-	return hex.EncodeToString(sum[:])
-}
-
-// PublicKeyFingerprint parses the SPKI AlgorithmIdentifier from spkiDER and returns
-// hex(SHA256("<algorithm>" || spkiDER)) for querying identity v0.0.1 shards.
-func PublicKeyFingerprint(spkiDER []byte) (string, error) {
-	alg, err := PublicKeyAlgorithmFromSPKI(spkiDER)
-	if err != nil {
-		return "", err
-	}
-	return PublicKeyFingerprintWithAlg(alg, spkiDER), nil
 }
 
 func formatTwoDigests(d1, d2 [hashSize]byte) string {
@@ -205,6 +97,9 @@ type kvPair struct {
 //     2. Claims:    hex(KH[claim]):hex(VH[claim]):hex(VH[issuer]) for the 6 allowlisted claims
 //   - Managed public key entry (neither "identity" nor "issuer" KV pair present):
 //     1. PublicKey: hex(root_of_trust)
+//
+// A key may be emitted more than once for one leaf; the VIndex host discards
+// the duplicates.
 func MapLeaf(leaf []byte, rawEmit func(key []byte)) {
 	if len(leaf) < minLeafSize || leaf[0] != LeafVersionV1 || (len(leaf)-minLeafSize)%kvPairSize != 0 {
 		return
@@ -256,19 +151,10 @@ func MapLeaf(leaf []byte, rawEmit func(key []byte)) {
 		return
 	}
 
-	seen := make(map[string]struct{}, len(identities)+len(claims))
-	emit := func(k string) {
-		if _, exists := seen[k]; exists {
-			return
-		}
-		seen[k] = struct{}{}
-		rawEmit([]byte(k))
-	}
-
 	for _, idVH := range identities {
-		emit(formatTwoDigests(idVH, issuerVH))
+		rawEmit([]byte(formatTwoDigests(idVH, issuerVH)))
 	}
 	for _, c := range claims {
-		emit(formatThreeDigests(c.keyHash, c.valHash, issuerVH))
+		rawEmit([]byte(formatThreeDigests(c.keyHash, c.valHash, issuerVH)))
 	}
 }

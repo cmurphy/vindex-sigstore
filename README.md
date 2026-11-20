@@ -40,7 +40,9 @@ In Kubernetes / GKE, `vindexd` is deployed as a `StatefulSet` with two `volumeCl
 
 No normalization (such as lowercasing or whitespace trimming) is applied by either `MapFn`; clients query exact values.
 
-The `hashedrekord` `MapFn` percent-encodes every byte of a key outside printable non-whitespace ASCII (`0x21`–`0x7E`) as `%XX` with uppercase hex, so `alice smith@example.com` is indexed as `alice%20smith@example.com:<issuer>` and `é` as `%C3%A9`. A literal `%` is left as is. Clients must encode the keys and prefixes they query the same way (`hashedrekord.PercentEncode`). A key that is empty, or longer than 1024 bytes after encoding, is not indexed.
+The `hashedrekord` `MapFn` percent-encodes every byte of a key outside printable non-whitespace ASCII (`0x21`–`0x7E`) as `%XX` with uppercase hex, so `alice smith@example.com` is indexed as `alice%20smith@example.com:<issuer>` and `é` as `%C3%A9`. A literal `%` is left as is. Clients must apply the same encoding to the keys and prefixes they query. A key that is empty, or longer than 1024 bytes after encoding, is not indexed.
+
+The `hashedrekord` `MapFn` indexes a URI SAN as Go's `net/url` re-serializes it, which is the form `rekor-monitor` matches today. For most URIs this is the string in the certificate, but a character that `net/url` escapes is indexed in its escaped form, so a literal `|` is indexed as `%7C`.
 
 ### 1. `hashedrekord v0.0.2` (`pkg/mapper/hashedrekord`)
 

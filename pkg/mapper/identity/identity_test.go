@@ -20,7 +20,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
-	"encoding/asn1"
 	"encoding/hex"
 	"slices"
 	"strings"
@@ -28,6 +27,21 @@ import (
 
 	"github.com/sigstore/vindex-sigstore/pkg/mapper/claim"
 )
+
+// h2 returns hex(SHA256(SHA256(s))), the form in which a client hashes an
+// identity, claim name, claim value, or issuer to build a lookup key.
+func h2(s string) string {
+	d := DoubleSHA256([]byte(s))
+	return hex.EncodeToString(d[:])
+}
+
+func identityKey(identityVal, issuer string) string {
+	return h2(identityVal) + ":" + h2(issuer)
+}
+
+func claimKey(claimName, value, issuer string) string {
+	return h2(claimName) + ":" + h2(value) + ":" + h2(issuer)
+}
 
 func isValidPreimageKey(key string) bool {
 	if len(key) == 0 || len(key) > 1024 {
@@ -100,15 +114,15 @@ func TestMapLeaf_OIDCHumanIdentity(t *testing.T) {
 	}, zeroReceipt)
 
 	got := collectKeys(leaf)
-	wantKey := FormatIdentityKey(email, issuer)
+	wantKey := identityKey(email, issuer)
 	if len(got) != 1 || got[0] != wantKey {
 		t.Fatalf("MapLeaf(OIDC human) = %v, want [%s]", got, wantKey)
 	}
 	if !isValidPreimageKey(got[0]) {
 		t.Errorf("emitted key %q violates VIndex canonical key contract", got[0])
 	}
-	if !strings.HasPrefix(got[0], FormatIdentityPrefix(email)) {
-		t.Errorf("emitted key %q does not match any-issuer prefix %q", got[0], FormatIdentityPrefix(email))
+	if anyIssuer := h2(email) + ":"; !strings.HasPrefix(got[0], anyIssuer) {
+		t.Errorf("emitted key %q does not match any-issuer prefix %q", got[0], anyIssuer)
 	}
 }
 
@@ -150,13 +164,13 @@ func TestMapLeaf_OIDCGitHubWorkflowOnlyAllowlistedClaims(t *testing.T) {
 
 	got := collectKeys(leaf)
 	want := []string{
-		FormatIdentityKey(workflowURI, issuer),
-		FormatClaimKey(claim.BuildSignerURI, workflowURI, issuer),
-		FormatClaimKey(claim.SourceRepositoryURI, repoURI, issuer),
-		FormatClaimKey(claim.SourceRepositoryIdentifier, repoID, issuer),
-		FormatClaimKey(claim.SourceRepositoryOwnerURI, ownerURI, issuer),
-		FormatClaimKey(claim.SourceRepositoryOwnerIdentifier, ownerID, issuer),
-		FormatClaimKey(claim.BuildConfigURI, buildConfigURI, issuer),
+		identityKey(workflowURI, issuer),
+		claimKey(claim.BuildSignerURI, workflowURI, issuer),
+		claimKey(claim.SourceRepositoryURI, repoURI, issuer),
+		claimKey(claim.SourceRepositoryIdentifier, repoID, issuer),
+		claimKey(claim.SourceRepositoryOwnerURI, ownerURI, issuer),
+		claimKey(claim.SourceRepositoryOwnerIdentifier, ownerID, issuer),
+		claimKey(claim.BuildConfigURI, buildConfigURI, issuer),
 	}
 
 	slices.Sort(got)
@@ -170,9 +184,9 @@ func TestMapLeaf_OIDCGitHubWorkflowOnlyAllowlistedClaims(t *testing.T) {
 			t.Errorf("emitted key %q violates VIndex canonical key contract", k)
 		}
 	}
-	repoKey := FormatClaimKey(claim.SourceRepositoryURI, repoURI, issuer)
-	if !strings.HasPrefix(repoKey, FormatClaimPrefix(claim.SourceRepositoryURI, repoURI)) {
-		t.Errorf("claim key %q does not match any-issuer claim prefix", repoKey)
+	anyIssuer := h2(claim.SourceRepositoryURI) + ":" + h2(repoURI) + ":"
+	if !slices.ContainsFunc(got, func(k string) bool { return strings.HasPrefix(k, anyIssuer) }) {
+		t.Errorf("no emitted key matches any-issuer claim prefix %q", anyIssuer)
 	}
 }
 
@@ -181,13 +195,28 @@ func TestMapLeaf_NoNormalizationPreservesCase(t *testing.T) {
 	lowerEmail := "alice.upper@example.com"
 	issuer := "https://Accounts.Google.COM"
 
-	if FormatIdentityKey(upperEmail, issuer) == FormatIdentityKey(lowerEmail, issuer) {
+	rot := sha256.Sum256([]byte(issuer))
+	msg := sha256.Sum256([]byte("artifact"))
+	var zeroReceipt [32]byte
+
+	var got []string
+	for _, email := range []string{upperEmail, lowerEmail} {
+		leaf := buildIdentityLeaf(rot, msg, []rawKV{
+			{key: "issuer", val: issuer},
+			{key: "identity", val: email},
+		}, zeroReceipt)
+		keys := collectKeys(leaf)
+		if want := identityKey(email, issuer); len(keys) != 1 || keys[0] != want {
+			t.Fatalf("MapLeaf(%q) = %v, want [%s]", email, keys, want)
+		}
+		got = append(got, keys[0])
+	}
+	if got[0] == got[1] {
 		t.Fatal("expected exact case preservation with no lowercasing normalization")
 	}
 }
 
-func TestMapLeaf_ManagedPublicKeyAndSPKIHelpers(t *testing.T) {
-	// 1. Ed25519 SPKI DER round-trip
+func TestMapLeaf_ManagedPublicKey(t *testing.T) {
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("ed25519.GenerateKey: %v", err)
@@ -196,17 +225,9 @@ func TestMapLeaf_ManagedPublicKeyAndSPKIHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MarshalPKIXPublicKey: %v", err)
 	}
-	wantFP, err := PublicKeyFingerprint(spkiDER)
-	if err != nil {
-		t.Fatalf("PublicKeyFingerprint(Ed25519): %v", err)
-	}
-
-	rotBytes, err := hex.DecodeString(wantFP)
-	if err != nil {
-		t.Fatalf("hex.DecodeString: %v", err)
-	}
-	var rot [32]byte
-	copy(rot[:], rotBytes)
+	// root_of_trust for a managed key is SHA256("<algorithm>" || SPKI DER).
+	rot := sha256.Sum256(append([]byte("Ed25519"), spkiDER...))
+	wantFP := hex.EncodeToString(rot[:])
 	msg := sha256.Sum256([]byte("artifact"))
 	sigReceipt := sha256.Sum256([]byte("signature"))
 
@@ -222,35 +243,6 @@ func TestMapLeaf_ManagedPublicKeyAndSPKIHelpers(t *testing.T) {
 	gotWithCtx := collectKeys(leafWithCtx)
 	if len(gotWithCtx) != 1 || gotWithCtx[0] != wantFP {
 		t.Fatalf("MapLeaf(pubkey with context) = %v, want [%s]", gotWithCtx, wantFP)
-	}
-
-	// 2. Synthetic ML-DSA-44 / ML-DSA-65 / ML-DSA-87 SPKI DER OID detection
-	for _, tc := range []struct {
-		oid asn1.ObjectIdentifier
-		alg string
-	}{
-		{oidMLDSA44, AlgMLDSA44},
-		{oidMLDSA65, AlgMLDSA65},
-		{oidMLDSA87, AlgMLDSA87},
-	} {
-		spki := spkiHeader{}
-		spki.Algorithm.Algorithm = tc.oid
-		spki.SubjectPublicKey = asn1.BitString{Bytes: []byte("fake-mldsa-pubkey-bytes"), BitLength: 8 * len("fake-mldsa-pubkey-bytes")}
-		der, err := asn1.Marshal(spki)
-		if err != nil {
-			t.Fatalf("asn1.Marshal(%s): %v", tc.alg, err)
-		}
-		gotAlg, err := PublicKeyAlgorithmFromSPKI(der)
-		if err != nil || gotAlg != tc.alg {
-			t.Fatalf("PublicKeyAlgorithmFromSPKI(%s) = %q, %v; want %q", tc.alg, gotAlg, err, tc.alg)
-		}
-		fp, err := PublicKeyFingerprint(der)
-		if err != nil {
-			t.Fatalf("PublicKeyFingerprint(%s): %v", tc.alg, err)
-		}
-		if fp != PublicKeyFingerprintWithAlg(tc.alg, der) {
-			t.Fatalf("PublicKeyFingerprint(%s) mismatch", tc.alg)
-		}
 	}
 }
 

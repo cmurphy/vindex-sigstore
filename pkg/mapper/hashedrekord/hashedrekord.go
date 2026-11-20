@@ -13,15 +13,21 @@
 // limitations under the License.
 
 // Package hashedrekord implements the Rekor v2 (hashedrekord v0.0.2) Identity
-// Monitor leaf mapping logic and canonical key formatting functions shared
-// between the WASM MapFn, proxy services, and clients.
+// Monitor leaf mapping logic.
 //
-// Values are indexed as they appear in the certificate. No normalization
-// (such as lowercasing or whitespace trimming) is applied. Bytes outside
-// printable non-whitespace ASCII (0x21..0x7E) are percent-encoded in the key
-// (see PercentEncode), so clients must encode the keys and prefixes they
-// query the same way. A key that is empty, or longer than 1024 bytes after
-// encoding, is not indexed.
+// Values are indexed without normalization (such as lowercasing or
+// whitespace trimming):
+//   - Email SANs are used as they appear in the certificate.
+//   - URI SANs are re-serialized by net/url, which may percent-encode
+//     characters that appear literally in the certificate (for example '|').
+//   - Fulcio extension values are the contents of their DER UTF8String or
+//     OCTET STRING. The v1 issuer extension is used as raw bytes.
+//   - Public keys are indexed by the hex SHA-256 of their DER encoding.
+//
+// Bytes outside printable non-whitespace ASCII (0x21..0x7E) are
+// percent-encoded in the key (see PercentEncode), so clients must encode the
+// keys and prefixes they query the same way. A key that is empty, or longer
+// than 1024 bytes after encoding, is not indexed.
 package hashedrekord
 
 import (
@@ -69,12 +75,6 @@ func FormatKeyWithIssuer(baseKey, issuer string) string {
 	return baseKey + ":" + issuer
 }
 
-// FormatSubjectPrefix returns the trailing-colon prefix ("<baseKey>:") used to query
-// all issuers for an exact subject or extension key via GET /keys?prefix=<prefix>.
-func FormatSubjectPrefix(baseKey string) string {
-	return baseKey + ":"
-}
-
 // FormatExtensionKey formats a Fulcio extension's claim name (for example
 // "source-repository-uri") and its extension value.
 func FormatExtensionKey(claimName, value string) string {
@@ -87,10 +87,9 @@ func PublicKeyFingerprint(keyDER []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func parseExtensionString(val []byte, isV1 bool) (string, error) {
-	if isV1 {
-		return string(val), nil
-	}
+// parseExtensionString returns the string held in a DER-encoded extension
+// value, which is a UTF8String or an OCTET STRING.
+func parseExtensionString(val []byte) (string, error) {
 	var str string
 	if _, err := asn1.Unmarshal(val, &str); err != nil {
 		var octets []byte
@@ -106,13 +105,12 @@ func extractIssuer(cert *x509.Certificate) string {
 	var issuer string
 	for _, ext := range cert.Extensions {
 		if ext.Id.Equal(oidIssuerV2) {
-			if val, err := parseExtensionString(ext.Value, false); err == nil && val != "" {
+			if val, err := parseExtensionString(ext.Value); err == nil && val != "" {
 				return val
 			}
 		} else if ext.Id.Equal(oidIssuerV1) && issuer == "" {
-			if val, err := parseExtensionString(ext.Value, true); err == nil && val != "" {
-				issuer = val
-			}
+			// The v1 issuer extension holds the issuer as raw bytes, not DER.
+			issuer = string(ext.Value)
 		}
 	}
 	return issuer
@@ -173,17 +171,14 @@ func IsValidPreimageKey(key string) bool {
 }
 
 // MapLeaf inspects a Rekor v2 JSON leaf and emits canonical search key preimages.
+// A key may be emitted more than once for one leaf; the VIndex host discards
+// the duplicates.
 func MapLeaf(leaf []byte, rawEmit func(key []byte)) {
-	seen := make(map[string]struct{})
 	emit := func(key string) {
 		key = PercentEncode(key)
 		if !IsValidPreimageKey(key) {
 			return
 		}
-		if _, ok := seen[key]; ok {
-			return
-		}
-		seen[key] = struct{}{}
 		rawEmit([]byte(key))
 	}
 
@@ -192,46 +187,62 @@ func MapLeaf(leaf []byte, rawEmit func(key []byte)) {
 		return
 	}
 	verifier := entry.Spec.HashedRekordV002.Signature.Verifier
+	if verifier.X509Certificate != nil {
+		mapCertificate(verifier.X509Certificate.RawBytes, emit)
+	}
+	if verifier.PublicKey != nil {
+		mapPublicKey(verifier.PublicKey.RawBytes, emit)
+	}
+}
 
-	// 1. Fulcio X.509 Certificate: Emit "<value>:<issuer>" keys.
-	// Unscoped (any-issuer) or partial-URI lookups are served via MPT prefix queries (/keys?prefix=).
-	if verifier.X509Certificate != nil && verifier.X509Certificate.RawBytes != "" {
-		certDer, err := base64.StdEncoding.DecodeString(verifier.X509Certificate.RawBytes)
-		if err == nil {
-			if cert, err := x509.ParseCertificate(certDer); err == nil {
-				issuer := extractIssuer(cert)
+// mapCertificate emits "<value>:<issuer>" keys for a base64-encoded Fulcio
+// X.509 certificate. Unscoped (any-issuer) or partial-URI lookups are served
+// via MPT prefix queries (/keys?prefix=).
+func mapCertificate(rawBytes string, emit func(key string)) {
+	certDER, err := base64.StdEncoding.DecodeString(rawBytes)
+	if err != nil {
+		return
+	}
+	cert, err := x509.ParseCertificate(certDER)
+	if err != nil {
+		return
+	}
+	issuer := extractIssuer(cert)
 
-				// Human identities (Email SAN)
-				for _, email := range cert.EmailAddresses {
-					if email != "" {
-						emit(FormatKeyWithIssuer(email, issuer))
-					}
-				}
-
-				// Workflow identities (URI SAN)
-				for _, u := range cert.URIs {
-					if san := u.String(); san != "" {
-						emit(FormatKeyWithIssuer(san, issuer))
-					}
-				}
-
-				// Allowlisted Fulcio Workload/Repository extensions, keyed by claim name
-				for _, ext := range cert.Extensions {
-					if claimName, ok := claimNameForOID(ext.Id); ok {
-						if val, err := parseExtensionString(ext.Value, false); err == nil && val != "" {
-							emit(FormatKeyWithIssuer(FormatExtensionKey(claimName, val), issuer))
-						}
-					}
-				}
-			}
+	// Human identities (Email SAN)
+	for _, email := range cert.EmailAddresses {
+		if email != "" {
+			emit(FormatKeyWithIssuer(email, issuer))
 		}
 	}
 
-	// 2. Public Key Verifier: Emit hex SHA-256 fingerprint of SPKI DER bytes
-	if verifier.PublicKey != nil && verifier.PublicKey.RawBytes != "" {
-		keyDer, err := base64.StdEncoding.DecodeString(verifier.PublicKey.RawBytes)
-		if err == nil && len(keyDer) > 0 {
-			emit(PublicKeyFingerprint(keyDer))
+	// Workflow identities (URI SAN)
+	for _, u := range cert.URIs {
+		if san := u.String(); san != "" {
+			emit(FormatKeyWithIssuer(san, issuer))
 		}
 	}
+
+	// Allowlisted Fulcio Workload/Repository extensions, keyed by claim name
+	for _, ext := range cert.Extensions {
+		claimName, ok := claimNameForOID(ext.Id)
+		if !ok {
+			continue
+		}
+		val, err := parseExtensionString(ext.Value)
+		if err != nil || val == "" {
+			continue
+		}
+		emit(FormatKeyWithIssuer(FormatExtensionKey(claimName, val), issuer))
+	}
+}
+
+// mapPublicKey emits the hex SHA-256 fingerprint of a base64-encoded SPKI DER
+// public key.
+func mapPublicKey(rawBytes string, emit func(key string)) {
+	keyDER, err := base64.StdEncoding.DecodeString(rawBytes)
+	if err != nil || len(keyDER) == 0 {
+		return
+	}
+	emit(PublicKeyFingerprint(keyDER))
 }
