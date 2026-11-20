@@ -118,7 +118,7 @@ make docker-build
 
 ## Local Deployment with Docker Compose
 
-Run `docker compose up --build` (setting `OUTPUT_LOG_SIGNER_KEY`, and optionally `MAPFN_TYPE=identity` for Rekor PQC shards) to populate `vindex_wasm` and start `vindexd`:
+Run `docker compose up --build` (setting `OUTPUT_LOG_SIGNER_KEY`, and optionally `MAPFN_TYPE=identity` for Rekor PQC shards) to populate `vindex_wasm` and start `vindexd`. The Output Log origin is the name in the signer key, which is the `ORIGIN` passed to `make keygen`:
 
 ```bash
 OUTPUT_LOG_SIGNER_KEY="PRIVATE+KEY+..." docker compose up --build

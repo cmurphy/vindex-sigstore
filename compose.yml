@@ -29,13 +29,11 @@ services:
       dockerfile: Dockerfile
       target: local-deploy
     command:
-      - "--mode=publisher"
       - "--wasm_path=/etc/vindex/mapper.wasm"
       - "--input_log_url=${INPUT_LOG_URL:-https://log2025-1.rekor.sigstore.dev/api/v2}"
       - "--input_log_origin=${INPUT_LOG_ORIGIN:-log2025-1.rekor.sigstore.dev}"
       - "--input_log_pubkey=${INPUT_LOG_PUBKEY:-log2025-1.rekor.sigstore.dev+cf119915+AbfK5adZJxsI323FwGD2AJJ9F4i89cfDuLdGJBIYntuO}"
       - "--output_log_dir=/mnt/disks/data/outlog"
-      - "--output_log_origin=${OUTPUT_LOG_ORIGIN:-vindex.rekor.sigstore.dev}"
       - "--output_log_signer_key=${OUTPUT_LOG_SIGNER_KEY}"
       - "--db_path=/mnt/disks/data/pebble"
       - "--tile_cache_dir=/mnt/disks/data/tiles"
